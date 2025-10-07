@@ -1047,7 +1047,7 @@ const ChecklistPage = () => {
     if (res.ok) {
       setData(prev => prev.filter(item => item._id !== _id));
     } else {
-      alert('삭제에 실패했습니다.');
+      alert('삭제 처리에 실패했습니다.');
     }
   }
 
@@ -1088,7 +1088,7 @@ const ChecklistPage = () => {
       setData(prev => prev.map(item => item._id === updated._id ? updated : item));
       handleCloseEditModal();
     } else {
-      alert('수정에 실패했습니다.');
+      alert('수정 처리에 실패했습니다.');
     }
   }
 
@@ -1130,19 +1130,19 @@ const ChecklistPage = () => {
 
     // 70% 미만이면 절대 통과가 될 수 없음
     if (progress < 70) {
-    // 재계약 불가 조건
+    // 기준 미충족 조건
     if (progress === 0) {
       return {
-        status: '재계약 불가',
+        status: '기준 미충족',
         color: '#000000',
         backgroundColor: '#f5f5f5',
         borderColor: '#d9d9d9'
       };
     }
     
-      // 70% 미만은 모두 빠른개선 필요
+      // 70% 미만은 모두 개선 필요
     return {
-      status: '빠른개선 필요',
+      status: '개선 필요',
       color: '#ff4d4f',
       backgroundColor: '#fff2f0',
       borderColor: '#ffccc7'
@@ -1159,9 +1159,9 @@ const ChecklistPage = () => {
       };
     }
     
-    // 70-99% 구간에서 개선사항 반영 후 재평가
+    // 70-99% 구간에서 개선 후 재평가
     return {
-      status: '개선사항 반영 후 재평가',
+      status: '개선 후 재평가',
       color: '#faad14',
       backgroundColor: '#fff7e6',
       borderColor: '#ffd591'
@@ -1728,7 +1728,7 @@ const ChecklistPage = () => {
         console.log('삭제 응답 데이터:', responseData);
 
         if (!response.ok) {
-          throw new Error(responseData.error || '파일 삭제에 실패했습니다.');
+          throw new Error(responseData.error || '파일 삭제 처리에 실패했습니다.');
         }
       } else {
         console.log('파일이 이미 존재하지 않음, DB에서만 제거:', filePath);
@@ -1759,12 +1759,12 @@ const ChecklistPage = () => {
         }
       }
 
-      setDeleteMessage('파일이 삭제되었습니다.');
+      setDeleteMessage('파일이 성공적으로 삭제되었습니다.');
       setTimeout(() => setDeleteMessage(''), 3000);
 
     } catch (error) {
       console.error('파일 삭제 오류:', error);
-      const errorMessage = error instanceof Error ? error.message : '파일 삭제에 실패했습니다.';
+      const errorMessage = error instanceof Error ? error.message : '파일 삭제 처리에 실패했습니다.';
       setDeleteMessage(errorMessage);
       setTimeout(() => setDeleteMessage(''), 5000);
     } finally {
@@ -1787,7 +1787,7 @@ const ChecklistPage = () => {
       });
       
       if (!res.ok) {
-        throw new Error('파일 업로드에 실패했습니다.');
+        throw new Error('파일 업로드 처리에 실패했습니다.');
       }
       
       const data = await res.json();
@@ -1814,12 +1814,12 @@ const ChecklistPage = () => {
         }
       }
       
-      setUploadMessage('파일이 업로드되었습니다.');
+      setUploadMessage('파일이 성공적으로 업로드되었습니다.');
       setTimeout(() => setUploadMessage(''), 3000);
       
     } catch (error) {
       console.error('파일 업로드 오류:', error);
-      setUploadMessage('파일 업로드에 실패했습니다.');
+      setUploadMessage('파일 업로드 처리에 실패했습니다.');
       setTimeout(() => setUploadMessage(''), 3000);
     } finally {
       setUploading(false);
@@ -1852,15 +1852,15 @@ const ChecklistPage = () => {
     });
       
       if (!response.ok) {
-        throw new Error('저장에 실패했습니다.');
+        throw new Error('저장 처리에 실패했습니다.');
       }
       
     setData((prev) => prev.map((item) => (item._id === updated._id ? updated : item)));
-      alert('저장되었습니다.');
+      alert('평가 결과가 저장되었습니다.');
     handleCloseModal();
     } catch (error) {
       console.error('저장 오류:', error);
-      alert(error instanceof Error ? error.message : '저장 중 오류가 발생했습니다.');
+      alert(error instanceof Error ? error.message : '저장 처리 중 문제가 발생했습니다.');
     } finally {
       setEvaluating(false);
     }
@@ -1994,25 +1994,25 @@ const ChecklistPage = () => {
         const hasOnlyRecommendations = data.basis && !data.basis.includes('(필수)');
         
         if (hasOnlyRecommendations) {
-          alert('해당 체크리스트는 통과로 평가되었으나 부분이행으로 기재되어 있습니다. 내용을 재확인해 주세요.');
+          alert('해당 항목은 기준을 충족하여 통과로 평가되었으나 부분이행으로 선택되어 있습니다. 이행여부를 재확인해 주세요.');
         } else {
-          alert('부분이행으로 선택했으나 평가 결과가 통과입니다. 이행여부를 재확인해 주세요.');
+          alert('부분이행으로 선택했으나 평가 결과가 기준을 충족합니다. 이행여부를 재확인해 주세요.');
         }
       } else if (selectedStatus === '미이행' && isPass) {
         // 미이행 선택 + 70% 이상 = 결과와 선택이 모두 잘못되었을 수 있음
-        const confirmRecheck = confirm('미이행으로 선택했으나 평가 결과가 통과입니다. 결과와 선택이 모두 잘못되었을 수 있으니 재확인이 필요합니다. 재확인하시겠습니까?');
+        const confirmRecheck = confirm('미이행으로 선택했으나 평가 결과가 기준을 충족합니다. 이행현황과 선택을 재확인하시겠습니까?');
         if (confirmRecheck) {
           // 재평가 로직 (선택사항)
           console.log('재확인 요청됨');
         }
       } else if (selectedStatus === '이행' && !isPass) {
         // 이행 선택 + 70% 미만 = 불일치
-        alert('이행으로 선택했으나 평가 결과가 불통과입니다. 이행현황 내용을 재확인해 주세요.');
+        alert('이행으로 선택했으나 평가 결과가 기준을 충족하지 못했습니다. 이행현황 내용을 보완해 주세요.');
       } else if (selectedStatus === '부분이행' && !isPass) {
-        // 부분이행 선택 + 70% 미만 = 정상 불통과
+        // 부분이행 선택 + 70% 미만 = 정상 미충족
         console.log('부분이행 선택과 평가 결과가 일치합니다.');
       } else if (selectedStatus === '미이행' && !isPass) {
-        // 미이행 선택 + 70% 미만 = 정상 불통과
+        // 미이행 선택 + 70% 미만 = 정상 미충족
         console.log('미이행 선택과 평가 결과가 일치합니다.');
       }
     } catch (error) {
@@ -2027,11 +2027,11 @@ const ChecklistPage = () => {
         progress: 0,
         improvement: '',
         basis: '',
-        error: error instanceof Error ? error.message : '평가 중 오류가 발생했습니다.',
+        error: error instanceof Error ? error.message : '평가 처리 중 문제가 발생했습니다.',
         details: error instanceof Error ? error.stack : '알 수 없는 오류'
       });
       
-      alert(error instanceof Error ? error.message : '평가 요청 중 오류가 발생했습니다.');
+      alert(error instanceof Error ? error.message : '평가 처리 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.');
     } finally {
       setEvaluating(false);
     }

@@ -130,9 +130,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
           ],
           generationConfig: {
-            maxOutputTokens: 4096,
-            temperature: 0.7
-          }
+            maxOutputTokens: 4096,  // Q&A용 토큰 수 증가
+            temperature: 0.7,
+            topP: 0.9,  // 응답 품질 향상
+            topK: 50    // 응답 다양성 증가
+          },
+          safetySettings: [
+            {
+              category: "HARM_CATEGORY_HARASSMENT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_HATE_SPEECH", 
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            }
+          ]
         },
         {
           headers: {

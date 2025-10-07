@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import pdf from 'pdf-parse';
 
+
 interface FileAnalysisResult {
   type: 'text' | 'image';
   content: string;
@@ -83,6 +84,16 @@ function evaluateEvidenceCompliance(
     }
   });
   
+  // HWP 파일이 있는 경우 수동평가 대상으로 분류
+  const hasHwpFiles = submittedFiles.some(file => 
+    path.extname(file).toLowerCase() === '.hwp'
+  );
+  
+  if (hasHwpFiles) {
+    // HWP 파일이 있으면 수동평가 대상으로 분류
+    console.log('HWP 파일 감지: 수동평가 대상으로 분류됩니다.');
+  }
+  
   // 필요증빙에서 요구하는 증빙 유형 추출
   const requiredTypes = [];
   const text = requiredEvidence.toLowerCase();
@@ -142,7 +153,7 @@ function evaluateEvidenceCompliance(
   };
 }
 
-// 증빙 내용 적절성 검증 함수
+// 증빙 내용 적절성 검증 함수 (개선된 버전)
 function validateEvidenceContent(
   requiredEvidence: string,
   submittedFiles: string[],
@@ -155,112 +166,196 @@ function validateEvidenceContent(
   validationScore: number;
   issues: string[];
   recommendations: string[];
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  canProceed: boolean;
 } {
   const issues: string[] = [];
   const recommendations: string[] = [];
   let validationScore = 100;
+  let severity: 'low' | 'medium' | 'high' | 'critical' = 'low';
+  let canProceed = true;
 
-  // 1. 증빙 관련성 검증
-  const isRelevant = checkEvidenceRelevance(requiredEvidence, submittedFiles, resultText);
-  if (!isRelevant) {
-    issues.push('제출된 증빙이 체크리스트 항목과 관련성이 없습니다');
-    validationScore -= 30;
+  // 1. 증빙 관련성 검증 (유연한 기준 적용)
+  const relevanceResult = checkEvidenceRelevanceFlexible(requiredEvidence, submittedFiles, resultText);
+  if (!relevanceResult.isRelevant) {
+    if (relevanceResult.severity === 'high') {
+      issues.push('제출된 증빙이 체크리스트 항목과 관련성이 없습니다');
+      validationScore -= 20; // 기존 30에서 20으로 완화
+      severity = 'high';
+    } else {
+      issues.push('제출된 증빙의 관련성을 더 명확히 해주세요');
+      validationScore -= 10;
+      severity = 'medium';
+    }
     recommendations.push('체크리스트 항목과 직접적으로 관련된 증빙을 제출해주세요');
   }
 
-  // 2. 증빙 적절성 검증
-  const isAppropriate = checkEvidenceAppropriateness(requiredEvidence, submittedFiles);
-  if (!isAppropriate) {
-    const requiredTypes = extractRequiredEvidenceTypes(requiredEvidence);
-    const submittedTypes = submittedFiles.map(file => {
-      const ext = path.extname(file).toLowerCase();
-      if (['.pdf', '.doc', '.docx', '.hwp'].includes(ext)) return '문서';
-      if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)) return '이미지';
-      if (['.xls', '.xlsx', '.csv'].includes(ext)) return '스프레드시트';
-      return '기타';
-    });
-    
-    const missingTypes = requiredTypes.filter(type => !submittedTypes.includes(type as any));
-    if (missingTypes.length > 0) {
-      issues.push(`누락된 증빙 유형: ${missingTypes.join(', ')}`);
+  // 2. 증빙 적절성 검증 (유연한 기준 적용)
+  const appropriatenessResult = checkEvidenceAppropriatenessFlexible(requiredEvidence, submittedFiles);
+  if (!appropriatenessResult.isAppropriate) {
+    if (appropriatenessResult.severity === 'high') {
+      const requiredTypes = extractRequiredEvidenceTypes(requiredEvidence);
+      const submittedTypes = submittedFiles.map(file => {
+        const ext = path.extname(file).toLowerCase();
+        if (['.pdf', '.doc', '.docx', '.hwp'].includes(ext)) return '문서';
+        if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)) return '이미지';
+        if (['.xls', '.xlsx', '.csv'].includes(ext)) return '스프레드시트';
+        return '기타';
+      });
+      
+      const missingTypes = requiredTypes.filter(type => !submittedTypes.includes(type as any));
+      if (missingTypes.length > 0) {
+        issues.push(`누락된 증빙 유형: ${missingTypes.join(', ')}`);
+      } else {
+        issues.push('제출된 증빙의 유형이 요구사항과 맞지 않습니다');
+      }
+      validationScore -= 15; // 기존 25에서 15로 완화
+      severity = severity === 'low' ? 'medium' : severity;
     } else {
-      issues.push('제출된 증빙의 유형이 요구사항과 맞지 않습니다');
+      issues.push('증빙 유형을 개선해주세요');
+      validationScore -= 8;
+      severity = severity === 'low' ? 'low' : severity;
     }
-    validationScore -= 25;
     recommendations.push('요구사항에 맞는 적절한 증빙 유형을 제출해주세요');
   }
 
-  // 3. 증빙 완성도 검증
-  const isComplete = checkEvidenceCompleteness(submittedFiles, resultText);
-  if (!isComplete) {
-    if (submittedFiles.length === 0) {
-      issues.push('증빙 파일이 제출되지 않았습니다');
-    } else if (resultText.length < 50) {
-      issues.push('이행현황 내용이 부족합니다');
+  // 3. 증빙 완성도 검증 (유연한 기준 적용)
+  const completenessResult = checkEvidenceCompletenessFlexible(submittedFiles, resultText);
+  if (!completenessResult.isComplete) {
+    if (completenessResult.severity === 'high') {
+      if (submittedFiles.length === 0) {
+        issues.push('증빙 파일이 제출되지 않았습니다');
+      } else if (resultText.length < 30) { // 기존 50에서 30으로 완화
+        issues.push('이행현황 내용이 부족합니다');
+      } else {
+        issues.push('증빙이 불완전하거나 내용이 부족합니다');
+      }
+      validationScore -= 15; // 기존 20에서 15로 완화
+      severity = severity === 'low' ? 'medium' : severity;
     } else {
-      issues.push('증빙이 불완전하거나 내용이 부족합니다');
+      issues.push('증빙 내용을 더 구체적으로 작성해주세요');
+      validationScore -= 8;
+      severity = severity === 'low' ? 'low' : severity;
     }
-    validationScore -= 20;
     recommendations.push('구체적이고 완전한 증빙 내용을 제출해주세요');
   }
 
-  // 4. 샘플/테스트 증빙 감지
+  // 4. 샘플/테스트 증빙 감지 (경고 수준으로 완화)
   const hasSampleContent = detectSampleEvidence(submittedFiles, resultText);
   if (hasSampleContent) {
     issues.push('샘플 또는 테스트용 증빙이 감지되었습니다');
-    validationScore -= 40;
+    validationScore -= 20; // 기존 40에서 20으로 완화
+    severity = 'high';
     recommendations.push('실제 이행 현황에 대한 진짜 증빙을 제출해주세요');
   }
 
-  // 5. 빈 증빙 감지
+  // 5. 빈 증빙 감지 (경고 수준으로 완화)
   const hasEmptyEvidence = detectEmptyEvidence(submittedFiles, resultText);
   if (hasEmptyEvidence) {
     issues.push('빈 증빙 또는 내용이 없는 파일이 감지되었습니다');
-    validationScore -= 35;
+    validationScore -= 15; // 기존 35에서 15로 완화
+    severity = severity === 'low' ? 'medium' : severity;
     recommendations.push('실제 내용이 포함된 증빙을 제출해주세요');
   }
 
+  // 6. 진행 가능 여부 결정 (더 유연한 기준)
+  // critical: 샘플/테스트 증빙만 차단
+  // high: 50점 미만일 때만 차단
+  // medium/low: 항상 진행 허용
+  if (hasSampleContent) {
+    canProceed = false;
+    severity = 'critical';
+  } else if (validationScore < 50) {
+    canProceed = false;
+    severity = 'high';
+  } else {
+    canProceed = true;
+  }
+
   return {
-    isRelevant,
-    isAppropriate,
-    isComplete,
+    isRelevant: relevanceResult.isRelevant,
+    isAppropriate: appropriatenessResult.isAppropriate,
+    isComplete: completenessResult.isComplete,
     validationScore: Math.max(0, validationScore),
     issues,
-    recommendations
+    recommendations,
+    severity,
+    canProceed
   };
 }
 
-// 증빙 관련성 검증
-function checkEvidenceRelevance(
+// 증빙 관련성 검증 (유연한 버전)
+function checkEvidenceRelevanceFlexible(
   requiredEvidence: string,
   submittedFiles: string[],
   resultText: string
-): boolean {
+): {
+  isRelevant: boolean;
+  severity: 'low' | 'medium' | 'high';
+  confidence: number;
+} {
   // 필요증빙에서 요구하는 키워드 추출
   const requiredKeywords = extractRequiredKeywords(requiredEvidence);
   
   // 이행현황 텍스트에서 관련 키워드 확인
   const resultTextLower = resultText.toLowerCase();
-  const hasRelevantContent = requiredKeywords.some(keyword => 
+  const contentMatches = requiredKeywords.filter(keyword => 
     resultTextLower.includes(keyword.toLowerCase())
   );
 
   // 제출된 파일명에서 관련 키워드 확인
-  const hasRelevantFiles = submittedFiles.some(file => {
+  const fileMatches = submittedFiles.filter(file => {
     const fileName = file.toLowerCase();
     return requiredKeywords.some(keyword => 
       fileName.includes(keyword.toLowerCase())
     );
   });
 
-  return hasRelevantContent || hasRelevantFiles;
+  const hasRelevantContent = contentMatches.length > 0;
+  const hasRelevantFiles = fileMatches.length > 0;
+  
+  // 신뢰도 계산
+  const totalKeywords = requiredKeywords.length;
+  const matchedKeywords = new Set([...contentMatches, ...fileMatches]).size;
+  const confidence = totalKeywords > 0 ? (matchedKeywords / totalKeywords) * 100 : 0;
+  
+  // 심각도 결정
+  let severity: 'low' | 'medium' | 'high' = 'low';
+  if (confidence < 30) {
+    severity = 'high';
+  } else if (confidence < 60) {
+    severity = 'medium';
+  }
+  
+  // 관련성 판단 (더 유연한 기준)
+  const isRelevant = hasRelevantContent || hasRelevantFiles || confidence > 20;
+  
+  return {
+    isRelevant,
+    severity,
+    confidence
+  };
 }
 
-// 증빙 적절성 검증
-function checkEvidenceAppropriateness(
+// 증빙 관련성 검증 (기존 버전 - 호환성 유지)
+function checkEvidenceRelevance(
+  requiredEvidence: string,
+  submittedFiles: string[],
+  resultText: string
+): boolean {
+  const result = checkEvidenceRelevanceFlexible(requiredEvidence, submittedFiles, resultText);
+  return result.isRelevant;
+}
+
+// 증빙 적절성 검증 (유연한 버전)
+function checkEvidenceAppropriatenessFlexible(
   requiredEvidence: string,
   submittedFiles: string[]
-): boolean {
+): {
+  isAppropriate: boolean;
+  severity: 'low' | 'medium' | 'high';
+  matchRate: number;
+} {
   const requiredTypes = extractRequiredEvidenceTypes(requiredEvidence);
   const submittedTypes = submittedFiles.map(file => {
     const ext = path.extname(file).toLowerCase();
@@ -270,21 +365,85 @@ function checkEvidenceAppropriateness(
     return '기타' as const;
   });
 
-  // 요구되는 증빙 유형과 제출된 유형 매칭
-  return requiredTypes.some(type => submittedTypes.includes(type as any));
+  // 매칭률 계산
+  const matchedTypes = requiredTypes.filter(type => submittedTypes.includes(type as any));
+  const matchRate = requiredTypes.length > 0 ? (matchedTypes.length / requiredTypes.length) * 100 : 100;
+  
+  // 심각도 결정
+  let severity: 'low' | 'medium' | 'high' = 'low';
+  if (matchRate < 30) {
+    severity = 'high';
+  } else if (matchRate < 60) {
+    severity = 'medium';
+  }
+  
+  // 적절성 판단 (더 유연한 기준)
+  const isAppropriate = matchRate > 20 || submittedTypes.length > 0;
+  
+  return {
+    isAppropriate,
+    severity,
+    matchRate
+  };
 }
 
-// 증빙 완성도 검증
+// 증빙 적절성 검증 (기존 버전 - 호환성 유지)
+function checkEvidenceAppropriateness(
+  requiredEvidence: string,
+  submittedFiles: string[]
+): boolean {
+  const result = checkEvidenceAppropriatenessFlexible(requiredEvidence, submittedFiles);
+  return result.isAppropriate;
+}
+
+// 증빙 완성도 검증 (유연한 버전)
+function checkEvidenceCompletenessFlexible(
+  submittedFiles: string[],
+  resultText: string
+): {
+  isComplete: boolean;
+  severity: 'low' | 'medium' | 'high';
+  completenessScore: number;
+} {
+  // 파일 존재 여부
+  const hasFiles = submittedFiles && submittedFiles.length > 0;
+  
+  // 텍스트 내용 품질 평가
+  const textLength = resultText.length;
+  const isMeaningless = isMeaninglessText(resultText);
+  const hasDetailedContent = textLength > 30 && !isMeaningless; // 기존 50에서 30으로 완화
+  
+  // 완성도 점수 계산
+  let completenessScore = 0;
+  if (hasFiles) completenessScore += 50;
+  if (hasDetailedContent) completenessScore += 40;
+  if (textLength > 100) completenessScore += 10; // 추가 보너스
+  
+  // 심각도 결정
+  let severity: 'low' | 'medium' | 'high' = 'low';
+  if (completenessScore < 30) {
+    severity = 'high';
+  } else if (completenessScore < 60) {
+    severity = 'medium';
+  }
+  
+  // 완성도 판단 (더 유연한 기준)
+  const isComplete = completenessScore > 40 || (hasFiles && textLength > 20);
+  
+  return {
+    isComplete,
+    severity,
+    completenessScore
+  };
+}
+
+// 증빙 완성도 검증 (기존 버전 - 호환성 유지)
 function checkEvidenceCompleteness(
   submittedFiles: string[],
   resultText: string
 ): boolean {
-  // 파일이 있고, 이행현황에 구체적인 내용이 있는지 확인
-  const hasFiles = submittedFiles && submittedFiles.length > 0;
-  const hasDetailedContent = resultText.length > 50 && 
-    !isMeaninglessText(resultText);
-  
-  return hasFiles && hasDetailedContent;
+  const result = checkEvidenceCompletenessFlexible(submittedFiles, resultText);
+  return result.isComplete;
 }
 
 // 샘플/테스트 증빙 감지
@@ -385,7 +544,7 @@ function isMeaninglessText(input: string): boolean {
   return false;
 }
 
-// 증빙 안내 메시지 생성 함수
+// 증빙 안내 메시지 생성 함수 (개선된 버전)
 function generateEvidenceGuidance(
   evidenceValidation: {
     isRelevant: boolean;
@@ -394,57 +553,119 @@ function generateEvidenceGuidance(
     validationScore: number;
     issues: string[];
     recommendations: string[];
+    severity?: 'low' | 'medium' | 'high' | 'critical';
+    canProceed?: boolean;
   },
   requiredEvidence: string
 ): string {
   let guidance = '';
+  const severity = evidenceValidation.severity || 'medium';
   
-  // 핵심 문제점만 간결하게 표시
-  if (!evidenceValidation.isRelevant) {
-    guidance += '• 제출된 증빙이 체크리스트 항목과 관련성이 없습니다\n';
+  // 심각도에 따른 메시지 톤 조정
+  if (severity === 'critical') {
+    guidance += '🚫 심각한 증빙 문제가 감지되었습니다\n\n';
+  } else if (severity === 'high') {
+    guidance += '⚠️ 증빙 검증 실패\n\n';
+  } else if (severity === 'medium') {
+    guidance += '⚠️ 증빙 개선이 필요합니다\n\n';
+  } else {
+    guidance += '💡 증빙 개선 제안\n\n';
   }
   
+  // 핵심 문제점을 우선순위에 따라 표시
+  const criticalIssues = evidenceValidation.issues.filter(issue => 
+    issue.includes('샘플') || issue.includes('테스트') || issue.includes('빈')
+  );
+  
+  const importantIssues = evidenceValidation.issues.filter(issue => 
+    issue.includes('관련성') || issue.includes('유형') || issue.includes('누락')
+  );
+  
+  const minorIssues = evidenceValidation.issues.filter(issue => 
+    !criticalIssues.includes(issue) && !importantIssues.includes(issue)
+  );
+  
+  // 심각한 문제부터 표시
+  criticalIssues.forEach(issue => {
+    guidance += `• ${issue}\n`;
+  });
+  
+  importantIssues.forEach(issue => {
+    guidance += `• ${issue}\n`;
+  });
+  
+  minorIssues.forEach(issue => {
+    guidance += `• ${issue}\n`;
+  });
+  
+  // 구체적인 해결 방안 제시
+  if (evidenceValidation.recommendations.length > 0) {
+    guidance += '\n📋 개선 방안:\n';
+    evidenceValidation.recommendations.forEach(rec => {
+      guidance += `• ${rec}\n`;
+    });
+  }
+  
+  // 요구되는 증빙 유형 안내
   if (!evidenceValidation.isAppropriate) {
     const requiredTypes = extractRequiredEvidenceTypes(requiredEvidence);
-    guidance += `• 요구되는 증빙 유형: ${requiredTypes.join(', ')}\n`;
+    if (requiredTypes.length > 0) {
+      guidance += `\n📄 요구되는 증빙 유형: ${requiredTypes.join(', ')}\n`;
+    }
   }
   
-  if (!evidenceValidation.isComplete) {
-    guidance += '• 증빙이 불완전하거나 내용이 부족합니다\n';
-  }
-  
-  // 샘플/테스트 증빙 감지
-  if (evidenceValidation.issues.some(issue => issue.includes('샘플') || issue.includes('테스트'))) {
-    guidance += '• 샘플 또는 테스트용 증빙이 감지되었습니다\n';
-  }
-  
-  // 빈 증빙 감지
-  if (evidenceValidation.issues.some(issue => issue.includes('빈') || issue.includes('내용이 없'))) {
-    guidance += '• 빈 증빙 또는 내용이 없는 파일이 감지되었습니다\n';
-  }
-  
-  // 증빙 개수 부족 감지
-  const evidenceCount = evidenceValidation.issues.filter(issue => 
-    issue.includes('개') && (issue.includes('부족') || issue.includes('누락'))
+  // HWP 파일 관련 안내 추가
+  const hasHwpFiles = evidenceValidation.issues.some(issue => 
+    issue.includes('수동평가') || issue.includes('HWP')
   );
-  if (evidenceCount.length > 0) {
-    guidance += `• ${evidenceCount[0]}\n`;
+  
+  if (hasHwpFiles) {
+    guidance += '\n\n📄 HWP 파일 안내:\n• HWP 파일은 수동평가 대상으로 분류됩니다.\n• 자동 분석이 불가능하여 파일명과 크기만 참고됩니다.\n• 정확한 평가를 위해서는 PDF로 변환 후 업로드해주세요.';
   }
   
-  // 누락된 증빙 유형 감지
-  const missingTypes = evidenceValidation.issues.filter(issue => 
-    issue.includes('누락된 증빙 유형')
-  );
-  if (missingTypes.length > 0) {
-    guidance += `• ${missingTypes[0]}\n`;
-  }
-  
-  if (guidance) {
-    guidance = '⚠️ 증빙 검증 실패\n\n' + guidance;
+  // 마무리 메시지
+  if (severity === 'critical') {
+    guidance += '\n실제 이행 현황에 대한 진짜 증빙을 제출한 후 다시 평가해주세요.';
+  } else if (severity === 'high') {
     guidance += '\n적절한 증빙을 제출한 후 다시 평가해주세요.';
+  } else {
+    guidance += '\n증빙을 개선하여 더 나은 평가 결과를 받으실 수 있습니다.';
   }
   
   return guidance;
+}
+
+// 파일 크기 제한 (10MB)
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+// 텍스트 청크 분할 함수
+function chunkText(text: string, maxChunkSize: number = 8000): string[] {
+  if (text.length <= maxChunkSize) {
+    return [text];
+  }
+  
+  const chunks: string[] = [];
+  let start = 0;
+  
+  while (start < text.length) {
+    let end = start + maxChunkSize;
+    
+    // 문장 경계에서 자르기
+    if (end < text.length) {
+      const lastPeriod = text.lastIndexOf('.', end);
+      const lastNewline = text.lastIndexOf('\n', end);
+      const cutPoint = Math.max(lastPeriod, lastNewline);
+      
+      if (cutPoint > start) {
+        end = cutPoint + 1;
+      }
+    }
+    
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
+  
+  return chunks;
 }
 
 // 파일 분석 함수 수정: 분석 결과를 일관된 객체 형태로 반환
@@ -459,6 +680,15 @@ async function analyzeFile(filePath: string): Promise<FileAnalysisResult> {
   const fileExtension = path.extname(filePath).toLowerCase();
   const fileStats = fs.statSync(fullPath);
   const fileSize = (fileStats.size / 1024).toFixed(2);
+  
+  // 파일 크기 제한 확인
+  if (fileStats.size > MAX_FILE_SIZE) {
+    return { 
+      type: 'text', 
+      content: `[파일 크기 초과: ${fileName} (${fileSize} KB)]\n파일이 너무 커서 분석할 수 없습니다. 10MB 이하의 파일을 업로드해주세요.`, 
+      fileName 
+    };
+  }
 
   // 이미지 파일인 경우
   const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
@@ -479,6 +709,15 @@ async function analyzeFile(filePath: string): Promise<FileAnalysisResult> {
     try {
       const dataBuffer = fs.readFileSync(fullPath);
       const data = await pdf(dataBuffer);
+      
+      // 대용량 PDF 파일 청크 처리
+      if (data.text.length > 15000) {
+        const chunks = chunkText(data.text, 8000);
+        const summary = `[대용량 PDF 파일: ${fileName} (${fileSize} KB, ${data.numpages} 페이지, ${chunks.length}개 청크)]\n파일이 너무 커서 요약된 내용만 분석됩니다.\n\n`;
+        const chunkContent = chunks.slice(0, 2).join('\n\n[중간 생략]\n\n'); // 처음 2개 청크만 사용
+        return { type: 'text', content: summary + chunkContent, fileName };
+      }
+      
       return { type: 'text', content: `[PDF 분석: ${fileName} (${fileSize} KB, ${data.numpages} 페이지)]\n${data.text}`, fileName };
     } catch (pdfError) {
       console.error('PDF 분석 오류:', pdfError);
@@ -489,14 +728,23 @@ async function analyzeFile(filePath: string): Promise<FileAnalysisResult> {
   // 텍스트 기반 파일인 경우
   if (['.txt', '.md', '.json', '.csv'].includes(fileExtension)) {
     const content = fs.readFileSync(fullPath, 'utf-8');
+    
+    // 대용량 텍스트 파일 청크 처리
+    if (content.length > 15000) {
+      const chunks = chunkText(content, 8000);
+      const summary = `[대용량 텍스트 파일: ${fileName} (${fileSize} KB, ${chunks.length}개 청크)]\n파일이 너무 커서 요약된 내용만 분석됩니다.\n\n`;
+      const chunkContent = chunks.slice(0, 2).join('\n\n[중간 생략]\n\n'); // 처음 2개 청크만 사용
+      return { type: 'text', content: summary + chunkContent, fileName };
+    }
+    
     return { type: 'text', content: `[텍스트 파일 분석: ${fileName} (${fileSize} KB)]\n${content}`, fileName };
   }
   
-  // HWP 파일인 경우 (API가 지원하지 않으므로 파일 정보만 제공)
+  // HWP 파일인 경우 (수동평가 대상)
   if (fileExtension === '.hwp') {
     return { 
       type: 'text', 
-      content: `[한글 문서 파일: ${fileName} (${fileSize} KB)]\n한글 문서 파일이 업로드되었습니다. API는 현재 HWP 파일 형식을 직접 지원하지 않습니다. 파일 내용을 확인하려면 PDF로 변환 후 업로드해주세요.`, 
+      content: `[수동평가 대상: ${fileName} (${fileSize} KB)]\n\n📋 HWP 파일 안내:\n- 파일명: ${fileName}\n- 파일 크기: ${fileSize} KB\n- 문서 유형: 한글 문서 (HWP)\n- 평가 방식: 수동평가 대상\n\n⚠️ 중요 안내:\nHWP 파일은 자동 분석이 불가능하여 수동평가 대상으로 분류됩니다.\n\n📄 PDF 변환 방법:\n1. 한글과컴퓨터 한글 프로그램에서 파일 열기\n2. "파일" → "PDF로 내보내기" 선택\n3. 변환된 PDF 파일을 다시 업로드\n\n💡 PDF 변환 후 업로드하시면 자동 분석이 가능합니다.`, 
       fileName 
     };
   }
@@ -596,8 +844,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       evidenceValidation
     });
 
-    // 증빙이 부적절한 경우 평가 대신 안내 메시지 반환
-    if (evidenceValidation.validationScore < 70) {
+    // 증빙이 부적절한 경우 처리 (유연한 기준 적용)
+    if (!evidenceValidation.canProceed) {
       const guidanceMessage = generateEvidenceGuidance(evidenceValidation, requiredEvidence);
       return res.status(200).json({
         progress: 0,
@@ -608,7 +856,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           needsEvidence,
           evidenceEvaluation,
           evidenceValidation,
-          evidenceImpact: '증빙 부적절로 인한 평가 불가',
+          evidenceImpact: evidenceValidation.severity === 'critical' ? 
+            '샘플/테스트 증빙으로 인한 평가 불가' : 
+            '증빙 부적절로 인한 평가 불가',
           guidance: guidanceMessage
         }
       });
@@ -626,30 +876,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const imageAnalyses = fileAnalyses.filter(f => f.type === 'image');
 
-    const promptText = `평가방법을 기준으로 준수 여부를 판단하고 준수율을 산출하세요.
+    const promptText = `평가방법 기준으로 준수율 산출:
 
 평가방법: ${evaluationMethod}
 이행현황: ${resultText}
 첨부파일: ${textAnalyses || '없음'}
 
-다음 JSON 형식으로만 응답하세요:
-{
-  "complianceRate": 0-100,
-  "evaluationBasis": [
-    {
-      "criterion": "평가 기준 문장",
-      "satisfied": true/false,
-      "type": "필수",
-      "reason": "충족/부족 사유"
-    }
-  ],
-  "improvementPlan": [
-    {
-      "item": "개선 항목",
-      "action": "개선 방안"
-    }
-  ]
-}`;
+점수: 90-100(완벽), 80-89(대부분), 70-79(기본), 60-69(일부), 50-59(거의미충족), 0-49(전혀미충족)
+HWP는 수동평가(파일명/크기만 참고)
+
+JSON응답:
+{"complianceRate": 0-100, "evaluationBasis": [{"criterion": "기준", "satisfied": true/false, "type": "필수", "reason": "사유"}], "improvementPlan": [{"item": "개선항목", "action": "방안"}]}`;
 
     /* 
     // Perplexity API용 멀티모달 메시지 구성 (주석 처리 - 필요시 사용)
@@ -670,7 +907,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // API 키 확인
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error('API 키가 설정되지 않았습니다.');
+      throw new Error('시스템 설정에 문제가 있습니다. 관리자에게 문의해주세요.');
     }
 
     const MAX_RETRIES = 3;
@@ -701,18 +938,45 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
           ],
           generationConfig: {
-            maxOutputTokens: 4096,
-            temperature: 0.1
-          }
+            maxOutputTokens: 8192,  // 대용량 파일 처리용 토큰 수 증가
+            temperature: 0.1,
+            topP: 0.9,  // 응답 품질 향상
+            topK: 50    // 응답 다양성 증가
+          },
+          safetySettings: [
+            {
+              category: "HARM_CATEGORY_HARASSMENT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_HATE_SPEECH", 
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            }
+          ]
         };
 
+        // AbortController를 사용한 타임아웃 설정 (대용량 파일 처리 고려)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2분 타임아웃
+        
         response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(requestBody),
+          signal: controller.signal
         });
+        
+        clearTimeout(timeoutId);
 
         // 5xx 에러인 경우 재시도
         if (response.status >= 500 && response.status < 600) {
@@ -731,14 +995,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       } catch (error) {
         console.error(`API 요청 중 네트워크 오류 발생 (시도 #${attempt}):`, error);
         if (attempt >= MAX_RETRIES) {
-          throw error; // 모든 재시도 실패 시 최종 에러 throw
+          throw new Error('네트워크 연결에 문제가 있습니다. 잠시 후 다시 시도해주세요.'); // 모든 재시도 실패 시 최종 에러 throw
         }
         await new Promise(resolve => setTimeout(resolve, 2000)); // 2초 대기
       }
     }
 
     if (!response) {
-      throw new Error('API 요청에 대한 응답을 받지 못했습니다.');
+      throw new Error('평가 시스템에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.');
     }
     
     const data = await response.json();
@@ -749,10 +1013,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
       // MAX_TOKENS 오류인 경우 특별 처리
       if (data.candidates && data.candidates[0] && data.candidates[0].finishReason === 'MAX_TOKENS') {
-        throw new Error('응답이 너무 길어서 토큰 제한에 걸렸습니다. 프롬프트를 단축해주세요.');
+        throw new Error('평가 내용이 너무 길어서 처리할 수 없습니다. 이행현황을 더 간결하게 작성해주세요.');
       }
       
-      throw new Error('API 응답 구조가 예상과 다릅니다. 응답: ' + JSON.stringify(data));
+      throw new Error('평가 시스템에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.');
     }
     
     const content = data.candidates[0].content.parts[0].text;
@@ -805,14 +1069,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       evaluationResult = {
         complianceRate: 0,
         evaluationBasis: [{
-          criterion: "평가 중 오류 발생",
+          criterion: "평가 시스템 오류",
           satisfied: false,
           type: "필수",
-          reason: "AI 응답 파싱 오류로 인해 평가를 완료할 수 없습니다."
+          reason: "평가 처리 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
         }],
         improvementPlan: [{
-          item: "시스템 오류",
-          action: "잠시 후 다시 시도해주세요."
+          item: "시스템 문제",
+          action: "잠시 후 다시 시도하거나, 이행현황을 더 간결하게 작성해주세요."
         }]
       };
     }
@@ -832,26 +1096,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (evaluationResult.improvementSuggestions && evaluationResult.improvementSuggestions.length > 0) {
         improvement = evaluationResult.improvementSuggestions.map((item: string) => `• ${item}`).join('\n');
       } else {
-        improvement = '• AI가 구체적인 개선 방안을 제시하지 못했습니다. 평가 근거의 "부족" 항목을 확인하여 조치해야 합니다.';
+        improvement = '• 평가 결과를 확인하고 부족한 부분을 개선해주세요.';
       }
     } else {
-      // 필수 항목 부족이 없을 때 (통과 상태)
+      // 점수에 따른 상태 분류
       if (evaluationResult.complianceRate === 100) {
-        improvement = '모든 기준을 충족하여 추가 개선사항 없음';
+        improvement = '모든 기준을 완벽하게 충족하여 추가 개선사항 없음';
+      } else if (evaluationResult.complianceRate >= 90) {
+        improvement = '거의 모든 기준을 충족했습니다. 세부 개선사항을 확인해주세요.';
+      } else if (evaluationResult.complianceRate >= 80) {
+        improvement = '대부분의 기준을 충족했습니다. 일부 개선이 필요합니다.';
       } else if (evaluationResult.complianceRate >= 70) {
-        // 70% 이상이면 통과 상태
-        if (evaluationResult.improvementSuggestions && evaluationResult.improvementSuggestions.length > 0) {
-          improvement = evaluationResult.improvementSuggestions.map((item: string) => `• ${item}`).join('\n');
-        } else {
-          improvement = '모든 필수 기준을 충족하여 통과하였으나, 세부 사항은 평가 근거를 확인하세요.';
-        }
+        improvement = '기본 기준은 충족했으나 상당한 개선이 필요합니다.';
+      } else if (evaluationResult.complianceRate >= 60) {
+        improvement = '일부 기준만 충족했습니다. 많은 개선이 필요합니다.';
+      } else if (evaluationResult.complianceRate >= 50) {
+        improvement = '기준을 거의 충족하지 못했습니다. 대폭적인 개선이 필요합니다.';
       } else {
-        // 70% 미만이면 불통과 상태
-        if (evaluationResult.improvementSuggestions && evaluationResult.improvementSuggestions.length > 0) {
-          improvement = evaluationResult.improvementSuggestions.map((item: string) => `• ${item}`).join('\n');
-        } else {
-          improvement = '• 준수율이 70% 미만으로 불통과입니다. 평가 근거의 "부족" 항목을 확인하여 조치해야 합니다.';
-        }
+        improvement = '기준을 전혀 충족하지 못했습니다. 전면적인 재검토가 필요합니다.';
+      }
+      
+      // AI가 제안한 개선사항이 있으면 추가
+      if (evaluationResult.improvementSuggestions && evaluationResult.improvementSuggestions.length > 0) {
+        improvement += '\n\n구체적인 개선사항:\n' + evaluationResult.improvementSuggestions.map((item: string) => `• ${item}`).join('\n');
       }
     }
     
@@ -859,6 +1126,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const basis = evaluationResult.evaluationBasis.map((item: any) => 
       `${item.satisfied ? '✓ 충족' : '✗ 부족'} (${item.type}) ${item.criterion}\n  - 사유: ${item.reason}`
     ).join('\n');
+
+    // 증빙 영향도 계산 (유연한 기준)
+    let evidenceImpact = '증빙 기준 충족';
+    if (needsEvidence && !evidenceEvaluation.hasEvidence) {
+      evidenceImpact = '증빙 누락으로 인한 점수 조정';
+    } else if (evidenceEvaluation.complianceScore < 50) {
+      evidenceImpact = '증빙 품질 부족으로 인한 점수 조정';
+    } else if (evidenceValidation.validationScore < 50) {
+      evidenceImpact = '증빙 내용 검증 실패로 인한 점수 조정';
+    } else if (evidenceValidation.severity === 'medium') {
+      evidenceImpact = '증빙 개선 권장';
+    } else if (evidenceValidation.severity === 'low') {
+      evidenceImpact = '증빙 기준 충족';
+    }
 
     res.status(200).json({
       progress: evaluationResult.complianceRate,
@@ -868,20 +1149,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         needsEvidence,
         evidenceEvaluation,
         evidenceValidation,
-        evidenceImpact: needsEvidence && !evidenceEvaluation.hasEvidence ? 
-          '증빙 누락으로 인한 점수 차감 적용' : 
-          evidenceEvaluation.complianceScore < 70 ? 
-          '증빙 품질 부족으로 인한 점수 조정' : 
-          evidenceValidation.validationScore < 70 ?
-          '증빙 내용 검증 실패로 인한 점수 차감' :
-          '증빙 기준 충족'
+        evidenceImpact,
+        // 추가 정보 제공
+        evidenceQuality: evidenceValidation.severity || 'low',
+        canProceed: evidenceValidation.canProceed ?? true,
+        recommendations: evidenceValidation.recommendations || []
       }
     });
 
   } catch (error) {
     console.error('Evaluation error:', error);
+    
+    // 사용자 친화적인 오류 메시지
+    let userMessage = '평가 중 문제가 발생했습니다.';
+    if (error instanceof Error) {
+      if (error.message.includes('API 키')) {
+        userMessage = '시스템 설정에 문제가 있습니다. 관리자에게 문의해주세요.';
+      } else if (error.message.includes('네트워크')) {
+        userMessage = '네트워크 연결에 문제가 있습니다. 잠시 후 다시 시도해주세요.';
+      } else if (error.message.includes('토큰') || error.message.includes('길어서')) {
+        userMessage = '입력 내용이 너무 깁니다. 이행현황을 더 간결하게 작성해주세요.';
+      } else if (error.message.includes('일시적인')) {
+        userMessage = error.message;
+      }
+    }
+    
     res.status(500).json({ 
-      error: '평가 중 오류가 발생했습니다.',
+      error: userMessage,
       details: error instanceof Error ? error.message : 'Unknown error'
     });
   }
