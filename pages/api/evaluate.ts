@@ -544,6 +544,261 @@ function isMeaninglessText(input: string): boolean {
   return false;
 }
 
+// 증빙 적절성 검증을 위한 AI 스키마 정의
+const evidenceValidationSchema = {
+  type: 'object',
+  properties: {
+    isAppropriate: {
+      type: 'boolean',
+      description: '제출된 증빙이 요구사항에 적절한지 여부',
+    },
+    issues: {
+      type: 'array',
+      description: '증빙이 부적절한 경우 발견된 문제점 목록',
+      items: {
+        type: 'string',
+      },
+    },
+    reasons: {
+      type: 'array',
+      description: '부적절한 사유 (각 사유는 구체적으로 작성)',
+      items: {
+        type: 'string',
+      },
+    },
+    severity: {
+      type: 'string',
+      enum: ['low', 'medium', 'high', 'critical'],
+      description: '문제의 심각도. critical: 평가 불가, high: 중대한 문제, medium: 보통 문제, low: 경미한 문제',
+    },
+    recommendations: {
+      type: 'array',
+      description: '증빙 개선을 위한 구체적인 권고사항',
+      items: {
+        type: 'string',
+      },
+    },
+  },
+  required: ['isAppropriate', 'issues', 'reasons', 'severity'],
+};
+
+// Gemini API를 사용한 증빙 적절성 검증 함수
+async function validateEvidenceContentWithAI(
+  requiredEvidence: string,
+  submittedFiles: string[],
+  resultText: string,
+  fileAnalyses: FileAnalysisResult[],
+  apiKey: string
+): Promise<{
+  isAppropriate: boolean;
+  issues: string[];
+  reasons: string[];
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  recommendations: string[];
+  canProceed: boolean;
+}> {
+  // 파일 내용 추출
+  const textAnalyses = fileAnalyses
+    .filter(f => f.type === 'text')
+    .map(f => f.content)
+    .join('\n\n');
+
+  const imageAnalyses = fileAnalyses.filter(f => f.type === 'image');
+
+  // 증빙 적절성 검증을 위한 프롬프트
+  const validationPrompt = `당신은 정보보호 평가 전문가입니다. 제출된 증빙이 체크리스트 항목의 요구사항에 적절한지 검증해주세요.
+
+=== 체크리스트 항목 정보 ===
+필요증빙: ${requiredEvidence}
+
+=== 제출된 증빙 정보 ===
+이행현황: ${resultText}
+제출된 파일: ${submittedFiles.length > 0 ? submittedFiles.join(', ') : '없음'}
+${textAnalyses ? `\n파일 내용:\n${textAnalyses}` : ''}
+
+=== 검증 기준 ===
+1. 관련성: 제출된 증빙이 체크리스트 항목과 직접적으로 관련되어 있는가?
+2. 적절성: 필요증빙에서 요구하는 유형과 내용이 적절한가?
+3. 완성도: 증빙 내용이 충분하고 구체적인가?
+4. 진실성: 실제 이행 현황을 반영한 증빙인가? (샘플/테스트/더미 데이터가 아닌가?)
+5. 유효성: 증빙이 요구사항을 충족하는 데 충분한가?
+
+=== 판단 기준 ===
+- critical: 샘플/테스트/더미 데이터이거나 전혀 관련이 없는 경우 → 평가 불가
+- high: 증빙이 요구사항과 상당히 부합하지 않거나 중요 증빙이 누락된 경우 → 평가 중단 권장
+- medium: 증빙이 부분적으로 적절하지만 개선이 필요한 경우 → 경고 후 평가 진행 가능
+- low: 증빙이 대체로 적절하지만 일부 보완이 권장되는 경우 → 평가 진행 가능
+
+=== 출력 형식 ===
+다음 JSON 형식으로 응답해주세요:
+{
+  "isAppropriate": true/false,
+  "issues": ["문제점1", "문제점2"],
+  "reasons": ["구체적인 부적절 사유1", "구체적인 부적절 사유2"],
+  "severity": "critical|high|medium|low",
+  "recommendations": ["개선 권고사항1", "개선 권고사항2"]
+}
+
+중요: JSON 형식으로만 응답하고 다른 설명은 포함하지 마세요.`;
+
+  const MAX_RETRIES = 3;
+  let attempt = 0;
+  let response: any = null;
+
+  while (attempt < MAX_RETRIES) {
+    attempt++;
+    console.log(`증빙 적절성 검증 API 요청 시도 #${attempt}`);
+
+    try {
+      // API 요청 본문 구성
+      const requestBody: any = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: validationPrompt
+              },
+              ...imageAnalyses.map(img => ({
+                inlineData: {
+                  mimeType: img.mimeType,
+                  data: img.content
+                }
+              }))
+            ]
+          }
+        ],
+        generationConfig: {
+          maxOutputTokens: 4096,
+          temperature: 0.1,
+          topP: 0.9,
+          topK: 50,
+          responseMimeType: 'application/json',
+          responseSchema: evidenceValidationSchema
+        },
+        safetySettings: [
+          {
+            category: "HARM_CATEGORY_HARASSMENT",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          },
+          {
+            category: "HARM_CATEGORY_HATE_SPEECH",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          },
+          {
+            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          },
+          {
+            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          }
+        ]
+      };
+
+      // 타임아웃 설정
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 1분 타임아웃
+
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      // 5xx 에러인 경우 재시도
+      if (response.status >= 500 && response.status < 600) {
+        console.warn(`증빙 검증 API가 ${response.status} 에러를 반환했습니다. 재시도합니다...`);
+        if (attempt < MAX_RETRIES) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      }
+
+      if (response.ok) {
+        break;
+      }
+
+    } catch (error) {
+      console.error(`증빙 검증 API 요청 중 네트워크 오류 발생 (시도 #${attempt}):`, error);
+      if (attempt >= MAX_RETRIES) {
+        throw new Error('증빙 검증 시스템에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.');
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw new Error('증빙 검증 시스템에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.');
+  }
+
+  const data = await response.json();
+
+  // API 응답 구조 안전하게 처리
+  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
+    throw new Error('증빙 검증 시스템 응답 구조가 올바르지 않습니다.');
+  }
+
+  let validationResult;
+  try {
+    // JSON 응답 파싱
+    const content = data.candidates[0].content.parts[0].text;
+    let jsonContent = content.trim();
+
+    // JSON 시작과 끝 찾기
+    const startIndex = jsonContent.indexOf('{');
+    const lastIndex = jsonContent.lastIndexOf('}');
+
+    if (startIndex !== -1 && lastIndex !== -1 && lastIndex > startIndex) {
+      jsonContent = jsonContent.substring(startIndex, lastIndex + 1);
+    }
+
+    validationResult = JSON.parse(jsonContent);
+
+    // 필수 필드 검증 및 기본값 설정
+    if (typeof validationResult.isAppropriate !== 'boolean') {
+      validationResult.isAppropriate = false;
+    }
+    if (!Array.isArray(validationResult.issues)) {
+      validationResult.issues = [];
+    }
+    if (!Array.isArray(validationResult.reasons)) {
+      validationResult.reasons = validationResult.issues.length > 0 ? validationResult.issues : ['증빙 검증 중 오류가 발생했습니다.'];
+    }
+    if (!['low', 'medium', 'high', 'critical'].includes(validationResult.severity)) {
+      validationResult.severity = validationResult.isAppropriate ? 'low' : 'high';
+    }
+    if (!Array.isArray(validationResult.recommendations)) {
+      validationResult.recommendations = [];
+    }
+
+  } catch (parseError) {
+    console.error('증빙 검증 응답 JSON 파싱 오류:', parseError);
+    // 기본 응답 생성
+    validationResult = {
+      isAppropriate: false,
+      issues: ['증빙 검증 중 오류가 발생했습니다.'],
+      reasons: ['증빙 검증 시스템 응답을 처리할 수 없습니다.'],
+      severity: 'high' as const,
+      recommendations: ['잠시 후 다시 시도해주세요.']
+    };
+  }
+
+  // 진행 가능 여부 결정
+  const canProceed = validationResult.isAppropriate || 
+    (validationResult.severity === 'low' || validationResult.severity === 'medium');
+
+  return {
+    ...validationResult,
+    canProceed
+  };
+}
+
 // 증빙 안내 메시지 생성 함수 (개선된 버전)
 function generateEvidenceGuidance(
   evidenceValidation: {
@@ -830,7 +1085,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       resultText
     );
 
-    // 증빙 내용 적절성 검증
+    // 증빙 내용 적절성 검증 (사전 필터링용 - 빠른 차단)
     const evidenceValidation = validateEvidenceContent(
       requiredEvidence,
       resultFiles || [],
@@ -838,14 +1093,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       evaluationMethod
     );
 
-    console.log('증빙 분석 결과:', {
+    console.log('증빙 분석 결과 (사전 검증):', {
       needsEvidence,
       evidenceEvaluation,
       evidenceValidation
     });
 
-    // 증빙이 부적절한 경우 처리 (유연한 기준 적용)
-    if (!evidenceValidation.canProceed) {
+    // 사전 필터링: 명확히 차단해야 하는 경우만 빠르게 차단
+    if (evidenceValidation.severity === 'critical') {
       const guidanceMessage = generateEvidenceGuidance(evidenceValidation, requiredEvidence);
       return res.status(200).json({
         progress: 0,
@@ -856,18 +1111,92 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           needsEvidence,
           evidenceEvaluation,
           evidenceValidation,
-          evidenceImpact: evidenceValidation.severity === 'critical' ? 
-            '샘플/테스트 증빙으로 인한 평가 불가' : 
-            '증빙 부적절로 인한 평가 불가',
+          evidenceImpact: '샘플/테스트 증빙으로 인한 평가 불가',
           guidance: guidanceMessage
         }
       });
     }
 
-    // 파일 분석 실행
+    // API 키 확인
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('시스템 설정에 문제가 있습니다. 관리자에게 문의해주세요.');
+    }
+
+    // 파일 분석 실행 (AI 검증을 위해 필요)
     const fileAnalyses: FileAnalysisResult[] = resultFiles && resultFiles.length > 0
       ? await Promise.all(resultFiles.map(analyzeFile))
       : [];
+
+    // Gemini API를 사용한 증빙 적절성 검증 (파일 내용 기반)
+    console.log('증빙 적절성 AI 검증 시작...');
+    let aiValidationResult;
+    try {
+      aiValidationResult = await validateEvidenceContentWithAI(
+        requiredEvidence,
+        resultFiles || [],
+        resultText,
+        fileAnalyses,
+        apiKey
+      );
+
+      console.log('증빙 적절성 AI 검증 결과:', aiValidationResult);
+
+      // AI 검증 결과에 따라 평가 진행 여부 결정
+      if (!aiValidationResult.canProceed) {
+        // 부적절한 증빙: 사유와 함께 평가 중단
+        const guidanceMessage = `🚫 증빙 검증 실패\n\n제출된 증빙이 요구사항에 적절하지 않아 평가를 진행할 수 없습니다.\n\n📋 발견된 문제점:\n${aiValidationResult.issues.map(issue => `• ${issue}`).join('\n')}\n\n❌ 부적절한 사유:\n${aiValidationResult.reasons.map(reason => `• ${reason}`).join('\n')}\n\n💡 개선 권고사항:\n${aiValidationResult.recommendations.map(rec => `• ${rec}`).join('\n')}`;
+
+        return res.status(200).json({
+          progress: 0,
+          improvement: '',
+          basis: '',
+          rawResponse: null,
+          evidenceAnalysis: {
+            needsEvidence,
+            evidenceEvaluation,
+            evidenceValidation: {
+              ...evidenceValidation,
+              // AI 검증 결과 병합
+              isAppropriate: aiValidationResult.isAppropriate,
+              issues: [...evidenceValidation.issues, ...aiValidationResult.issues],
+              reasons: aiValidationResult.reasons,
+              severity: aiValidationResult.severity,
+              recommendations: [...evidenceValidation.recommendations, ...aiValidationResult.recommendations],
+              canProceed: false
+            },
+            evidenceImpact: aiValidationResult.severity === 'critical' ? 
+              '증빙이 부적절하여 평가 불가 (AI 검증)' : 
+              '증빙이 부적절하여 평가 중단 (AI 검증)',
+            guidance: guidanceMessage
+          }
+        });
+      }
+
+      console.log('증빙 적절성 검증 통과. 최종 평가 진행...');
+
+    } catch (error) {
+      console.error('증빙 적절성 AI 검증 중 오류:', error);
+      // AI 검증 실패 시 기존 로직으로 폴백
+      if (!evidenceValidation.canProceed) {
+        const guidanceMessage = generateEvidenceGuidance(evidenceValidation, requiredEvidence);
+        return res.status(200).json({
+          progress: 0,
+          improvement: '',
+          basis: '',
+          rawResponse: null,
+          evidenceAnalysis: {
+            needsEvidence,
+            evidenceEvaluation,
+            evidenceValidation,
+            evidenceImpact: '증빙 부적절로 인한 평가 불가',
+            guidance: guidanceMessage
+          }
+        });
+      }
+      // 검증은 통과했으므로 최종 평가 진행 (오류 로그만 기록)
+      console.warn('증빙 AI 검증 실패했으나 기존 검증 통과로 최종 평가 진행');
+    }
 
     const textAnalyses = fileAnalyses
       .filter(f => f.type === 'text')
@@ -904,12 +1233,7 @@ JSON응답:
     }];
     */
 
-    // API 키 확인
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('시스템 설정에 문제가 있습니다. 관리자에게 문의해주세요.');
-    }
-
+    // 최종 평가 API 호출 (API 키는 이미 확인됨)
     const MAX_RETRIES = 3;
     let attempt = 0;
     let response: any = null;

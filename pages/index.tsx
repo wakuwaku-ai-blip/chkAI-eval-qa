@@ -344,6 +344,267 @@ const FilePreviewModal = ({
   );
 };
 
+// HWP 파일 안내 모달 컴포넌트
+const HwpWarningModal = ({
+  isOpen,
+  fileName,
+  onConfirm,
+  onCancel
+}: {
+  isOpen: boolean;
+  fileName: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 2000,
+      }}
+      onClick={onCancel}
+    >
+      <div
+        style={{
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          width: '90%',
+          maxWidth: '600px',
+          maxHeight: '80vh',
+          overflow: 'auto',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 헤더 */}
+        <div style={{
+          padding: '20px',
+          borderBottom: '2px solid #ff4d4f',
+          backgroundColor: '#fff2f0',
+          borderRadius: '8px 8px 0 0'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '24px' }}>⚠️</span>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#ff4d4f' }}>
+                HWP 파일 업로드 안내
+              </h2>
+              <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
+                파일: {fileName}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 내용 */}
+        <div style={{ padding: '20px' }}>
+          <div style={{
+            padding: '15px',
+            backgroundColor: '#fff7e6',
+            borderRadius: '6px',
+            border: '1px solid #ffd591',
+            marginBottom: '20px'
+          }}>
+            <div style={{ fontSize: '14px', lineHeight: '1.6', color: '#d46b08' }}>
+              <strong>HWP 파일은 자동 분석이 불가능합니다.</strong><br/>
+              정확한 평가를 위해 PDF로 변환하거나 캡처하여 업로드하는 것을 권장합니다.<br/>
+              <strong style={{ color: '#ff4d4f' }}>※ 수동평가를 요청하시는 경우에만 HWP 파일로 업로드하세요.</strong>
+            </div>
+          </div>
+
+          {/* 수동평가 안내 */}
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{
+              fontSize: '16px',
+              fontWeight: 'bold',
+              color: '#722ed1',
+              marginBottom: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <span>📋</span>
+              <span>수동평가 안내</span>
+            </div>
+            <div style={{
+              padding: '15px',
+              backgroundColor: '#f9f0ff',
+              borderRadius: '6px',
+              border: '1px solid #d3adf7',
+              fontSize: '14px',
+              lineHeight: '1.8',
+              color: '#531dab'
+            }}>
+              <div style={{ marginBottom: '8px' }}>
+                HWP 파일을 업로드하시면 <strong>수동평가 대상</strong>으로 분류됩니다.
+              </div>
+              <div style={{ marginBottom: '8px' }}>
+                • 자동 분석이 불가능하여 <strong>파일명과 파일 크기만 참고</strong>됩니다.
+              </div>
+              <div>
+                • 수동평가를 위해 업로드하시려면 하단의 <strong>"수동평가용으로 업로드"</strong> 버튼을 눌러주세요.
+              </div>
+            </div>
+          </div>
+
+          {/* PDF 변환 방법 */}
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{
+              fontSize: '16px',
+              fontWeight: 'bold',
+              color: '#1890ff',
+              marginBottom: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <span>📄</span>
+              <span>PDF 변환 방법 (한글 프로그램)</span>
+            </div>
+            <div style={{
+              padding: '15px',
+              backgroundColor: '#f0f5ff',
+              borderRadius: '6px',
+              border: '1px solid #adc6ff',
+              fontSize: '14px',
+              lineHeight: '1.8',
+              color: '#0050b3'
+            }}>
+              <div style={{ marginBottom: '8px' }}>
+                <strong>1단계:</strong> 한글과컴퓨터 한글 프로그램에서 파일 열기
+              </div>
+              <div style={{ marginBottom: '8px' }}>
+                <strong>2단계:</strong> 메뉴에서 <strong>"파일"</strong> → <strong>"PDF로 내보내기"</strong> 선택
+              </div>
+              <div style={{ marginBottom: '8px' }}>
+                <strong>3단계:</strong> 저장 위치 지정 후 저장
+              </div>
+              <div>
+                <strong>4단계:</strong> 변환된 PDF 파일을 다시 업로드
+              </div>
+            </div>
+          </div>
+
+          {/* 캡처 방법 */}
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{
+              fontSize: '16px',
+              fontWeight: 'bold',
+              color: '#fa8c16',
+              marginBottom: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <span>📸</span>
+              <span>캡처 방법</span>
+            </div>
+            <div style={{
+              padding: '15px',
+              backgroundColor: '#fff7e6',
+              borderRadius: '6px',
+              border: '1px solid #ffd591',
+              fontSize: '14px',
+              lineHeight: '1.8',
+              color: '#d46b08'
+            }}>
+              <div style={{ marginBottom: '8px' }}>
+                <strong>1단계:</strong> 한글 프로그램에서 필요한 페이지 열기
+              </div>
+              <div style={{ marginBottom: '8px' }}>
+                <strong>2단계:</strong> 화면 캡처 (Windows: Win+Shift+S, Mac: Cmd+Shift+4)
+              </div>
+              <div style={{ marginBottom: '8px' }}>
+                <strong>3단계:</strong> PNG 또는 JPG로 저장
+              </div>
+              <div>
+                <strong>4단계:</strong> 이미지 파일을 업로드
+              </div>
+            </div>
+          </div>
+
+          {/* 추가 안내 */}
+          <div style={{
+            padding: '12px',
+            backgroundColor: '#f6ffed',
+            borderRadius: '6px',
+            border: '1px solid #b7eb8f',
+            fontSize: '13px',
+            color: '#389e0d',
+            textAlign: 'center'
+          }}>
+            💡 <strong>PDF 변환을 가장 권장합니다.</strong> PDF 파일은 자동 분석이 가능하여 더 정확한 평가가 가능합니다.<br/>
+            수동평가가 필요한 경우에만 HWP 파일을 업로드하세요.
+          </div>
+        </div>
+
+        {/* 버튼 */}
+        <div style={{
+          padding: '20px',
+          borderTop: '1px solid #e9ecef',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: '10px',
+          backgroundColor: '#fafafa'
+        }}>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#f5f5f5',
+              color: '#666',
+              border: '1px solid #d9d9d9',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#e8e8e8';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = '#f5f5f5';
+            }}
+          >
+            취소
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#722ed1',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#9254de';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = '#722ed1';
+            }}
+          >
+            수동평가용으로 업로드
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Q&A 모달 컴포넌트
 const QAModal = ({ 
   item, 
@@ -1028,6 +1289,10 @@ const ChecklistPage = () => {
   // Q&A 상태
   const [qaModalOpen, setQaModalOpen] = useState(false);
   const [qaItem, setQaItem] = useState<ChecklistItem | null>(null);
+  
+  // HWP 파일 안내 모달 상태
+  const [hwpWarningModalOpen, setHwpWarningModalOpen] = useState(false);
+  const [pendingHwpFile, setPendingHwpFile] = useState<File | null>(null);
   
   // 컬럼 표시/숨김 상태
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
@@ -1774,11 +2039,27 @@ const ChecklistPage = () => {
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (!e.target.files || e.target.files.length === 0) return;
+    
+    const file = e.target.files[0];
+    const fileName = file.name.toLowerCase();
+    
+    // HWP 파일 감지
+    if (fileName.endsWith('.hwp')) {
+      // HWP 파일 정보 저장
+      setPendingHwpFile(file);
+      // 팝업 표시
+      setHwpWarningModalOpen(true);
+      // 파일 input 초기화
+      e.target.value = '';
+      return;
+    }
+    
+    // HWP가 아닌 경우 기존 업로드 로직 실행
     setUploading(true);
     setUploadMessage('');
     
     const formData = new FormData();
-    formData.append('file', e.target.files[0]);
+    formData.append('file', file);
     
     try {
       const res = await fetch('/api/upload', {
@@ -1824,6 +2105,70 @@ const ChecklistPage = () => {
     } finally {
       setUploading(false);
     }
+  }
+
+  // HWP 파일 업로드 확인 핸들러
+  async function handleHwpConfirm() {
+    if (!pendingHwpFile) return;
+    
+    setHwpWarningModalOpen(false);
+    setUploading(true);
+    setUploadMessage('');
+    
+    const formData = new FormData();
+    formData.append('file', pendingHwpFile);
+    
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!res.ok) {
+        throw new Error('파일 업로드 처리에 실패했습니다.');
+      }
+      
+      const data = await res.json();
+      
+      // UI 업데이트
+      setModalState((prev) => ({ ...prev, resultFiles: [...prev.resultFiles, data.filePath] }));
+      
+      // DB 업데이트
+      if (selected) {
+        const updatedFiles = [...modalState.resultFiles, data.filePath];
+        const updated = { 
+          ...selected, 
+          resultFiles: updatedFiles 
+        };
+        
+        const updateRes = await fetch('/api/checklist', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updated),
+        });
+        
+        if (updateRes.ok) {
+          setData(prev => prev.map(item => item._id === selected._id ? updated : item));
+        }
+      }
+      
+      setUploadMessage('파일이 성공적으로 업로드되었습니다.');
+      setTimeout(() => setUploadMessage(''), 3000);
+      
+    } catch (error) {
+      console.error('파일 업로드 오류:', error);
+      setUploadMessage('파일 업로드 처리에 실패했습니다.');
+      setTimeout(() => setUploadMessage(''), 3000);
+    } finally {
+      setUploading(false);
+      setPendingHwpFile(null);
+    }
+  }
+
+  // HWP 파일 업로드 취소 핸들러
+  function handleHwpCancel() {
+    setHwpWarningModalOpen(false);
+    setPendingHwpFile(null);
   }
 
   async function handleSave() {
@@ -3272,6 +3617,13 @@ const ChecklistPage = () => {
           onClose={handleCloseQAModal}
         />
       )}
+      {/* HWP 파일 안내 모달 */}
+      <HwpWarningModal
+        isOpen={hwpWarningModalOpen}
+        fileName={pendingHwpFile?.name || ''}
+        onConfirm={handleHwpConfirm}
+        onCancel={handleHwpCancel}
+      />
       {/* AI Assistant 모달 */}
     </div>
   );

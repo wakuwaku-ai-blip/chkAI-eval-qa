@@ -6,6 +6,10 @@
 
 ### HWP 파일 처리
 - **수동평가 대상**: HWP 파일은 자동 분석이 불가능하여 수동평가 대상으로 분류
+- **안내 모달**: HWP 파일 선택 시 자동으로 안내 모달 표시
+  - PDF 변환 방법 안내 (한글 프로그램 사용법)
+  - 화면 캡처 방법 안내
+  - 수동평가 대상임을 명확히 안내
 - **PDF 변환 권장**: 정확한 평가를 위해 PDF로 변환 후 업로드 권장
 - **제한적 참고**: 파일명과 크기 정보만으로 평가에 참고
 
@@ -46,8 +50,12 @@ npm run dev
 
 - **체크리스트 관리**: 개인정보보호법 준수 체크리스트 항목 관리
 - **평가 시스템**: 각 항목별 이행 상태 평가 및 점수 관리
-- **AI Q&A**: Perplexity API를 활용한 개선 방안 제안
+  - **증빙 적절성 AI 검증**: Gemini API를 활용한 증빙 자료 적절성 사전 검증
+  - **자동 평가**: 이행현황과 첨부파일을 분석하여 준수율 자동 산출
+- **AI Q&A**: Gemini API를 활용한 개선 방안 제안 및 질문 답변
 - **파일 업로드**: 증빙 자료 업로드 및 관리
+  - **HWP 파일 안내**: HWP 파일 업로드 시 수동평가 안내 모달 표시
+  - **PDF 변환 권장**: 자동 분석을 위한 PDF 변환 방법 안내
 - **진행률 추적**: 전체 평가 진행률 시각화
 
 ## 🛠️ 기술 스택
@@ -56,7 +64,7 @@ npm run dev
 - **Backend**: Next.js API Routes
 - **Database**: MongoDB 7.0
 - **UI Library**: Ant Design
-- **AI Integration**: Perplexity API
+- **AI Integration**: Gemini API (증빙 검증 및 평가)
 - **File Processing**: PDF, HWP, 이미지 파일 지원
 
 ## 📁 프로젝트 구조
@@ -66,7 +74,7 @@ chkAI-eval-qa/
 ├── pages/
 │   ├── api/                 # API 엔드포인트
 │   │   ├── checklist.ts     # 체크리스트 CRUD
-│   │   ├── evaluate.ts      # 평가 처리
+│   │   ├── evaluate.ts      # 평가 처리 (증빙 검증 포함)
 │   │   ├── qa.ts           # Q&A 처리
 │   │   └── upload.ts       # 파일 업로드
 │   └── index.tsx           # 메인 페이지
@@ -113,7 +121,7 @@ npm run docker:clean    # Docker 리소스 정리
 MONGODB_URI=mongodb://localhost:27017/chkAI-eval-qa
 
 # API 키
-PERPLEXITY_API_KEY=your_perplexity_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # 애플리케이션 설정
 NODE_ENV=development
