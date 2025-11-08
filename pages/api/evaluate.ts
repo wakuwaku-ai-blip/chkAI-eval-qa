@@ -2,6 +2,10 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import fs from 'fs';
 import path from 'path';
 import pdf from 'pdf-parse';
+import mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
+import AdmZip from 'adm-zip';
+import { XMLParser } from 'fast-xml-parser';
 
 
 interface FileAnalysisResult {
@@ -739,16 +743,65 @@ ${textAnalyses ? `\n파일 내용:\n${textAnalyses}` : ''}
 
   const data = await response.json();
 
-  // API 응답 구조 안전하게 처리
-  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
-    throw new Error('증빙 검증 시스템 응답 구조가 올바르지 않습니다.');
+  // API 응답 구조 안전하게 처리 및 상세 로깅
+  console.log('증빙 검증 API 응답 구조:', JSON.stringify(data, null, 2).substring(0, 1000)); // 처음 1000자만 로깅
+
+  // 응답 구조 검증
+  if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+    console.error('증빙 검증 API 응답: candidates 배열이 없거나 비어있습니다.');
+    throw new Error('증빙 검증 시스템 응답 구조가 올바르지 않습니다. (candidates 없음)');
+  }
+
+  const candidate = data.candidates[0];
+  
+  // finishReason 확인 (안전 필터 차단 등)
+  if (candidate.finishReason) {
+    console.log('증빙 검증 API finishReason:', candidate.finishReason);
+    
+    if (candidate.finishReason === 'SAFETY') {
+      console.error('증빙 검증 API: 안전 필터에 의해 차단되었습니다.');
+      throw new Error('증빙 검증 시스템이 안전 필터에 의해 차단되었습니다. 입력 내용을 확인해주세요.');
+    }
+    
+    if (candidate.finishReason === 'MAX_TOKENS') {
+      console.error('증빙 검증 API: 토큰 제한 초과');
+      throw new Error('증빙 검증 내용이 너무 깁니다. 입력을 간결하게 작성해주세요.');
+    }
+    
+    if (candidate.finishReason === 'RECITATION') {
+      console.error('증빙 검증 API: 인용 감지');
+      throw new Error('증빙 검증 시스템이 인용된 내용을 감지했습니다.');
+    }
+  }
+
+  // content 구조 확인
+  if (!candidate.content) {
+    console.error('증빙 검증 API 응답: content가 없습니다.');
+    throw new Error('증빙 검증 시스템 응답 구조가 올바르지 않습니다. (content 없음)');
+  }
+
+  if (!candidate.content.parts || !Array.isArray(candidate.content.parts) || candidate.content.parts.length === 0) {
+    console.error('증빙 검증 API 응답: parts 배열이 없거나 비어있습니다.');
+    throw new Error('증빙 검증 시스템 응답 구조가 올바르지 않습니다. (parts 없음)');
+  }
+
+  // text 필드 확인
+  const part = candidate.content.parts[0];
+  if (!part.text) {
+    console.error('증빙 검증 API 응답: text 필드가 없습니다.');
+    console.error('part 내용:', JSON.stringify(part, null, 2));
+    throw new Error('증빙 검증 시스템 응답 구조가 올바르지 않습니다. (text 없음)');
   }
 
   let validationResult;
+  let jsonContent = ''; // catch 블록에서 접근 가능하도록 외부에 선언
   try {
-    // JSON 응답 파싱
-    const content = data.candidates[0].content.parts[0].text;
-    let jsonContent = content.trim();
+    // JSON 응답 파싱 (이미 검증된 part.text 사용)
+    const content = part.text;
+    jsonContent = content.trim();
+
+    // 원본 응답 로깅 (디버깅용)
+    console.log('증빙 검증 원본 응답:', jsonContent.substring(0, 500)); // 처음 500자만 로깅
 
     // JSON 시작과 끝 찾기
     const startIndex = jsonContent.indexOf('{');
@@ -758,6 +811,63 @@ ${textAnalyses ? `\n파일 내용:\n${textAnalyses}` : ''}
       jsonContent = jsonContent.substring(startIndex, lastIndex + 1);
     }
 
+    // JSON 파싱 전 정리 작업
+    // 1. 마크다운 코드 블록 제거
+    jsonContent = jsonContent.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+    
+    // 2. JSON 형식 검증 및 수정
+    // 마지막 쉼표 제거 (객체/배열 끝의 불필요한 쉼표)
+    jsonContent = jsonContent.replace(/,(\s*[}\]])/g, '$1');
+    
+    // 3. 이스케이프되지 않은 줄바꿈 처리
+    // 문자열 값 내의 줄바꿈을 이스케이프 처리
+    // 단, 이미 이스케이프된 것은 건드리지 않음
+    let inString = false;
+    let escapeNext = false;
+    let result = '';
+    
+    for (let i = 0; i < jsonContent.length; i++) {
+      const char = jsonContent[i];
+      
+      if (escapeNext) {
+        result += char;
+        escapeNext = false;
+        continue;
+      }
+      
+      if (char === '\\') {
+        result += char;
+        escapeNext = true;
+        continue;
+      }
+      
+      if (char === '"') {
+        inString = !inString;
+        result += char;
+        continue;
+      }
+      
+      if (inString && char === '\n') {
+        result += '\\n';
+        continue;
+      }
+      
+      if (inString && char === '\r') {
+        result += '\\r';
+        continue;
+      }
+      
+      if (inString && char === '\t') {
+        result += '\\t';
+        continue;
+      }
+      
+      result += char;
+    }
+    
+    jsonContent = result;
+    
+    // 4. 파싱 시도
     validationResult = JSON.parse(jsonContent);
 
     // 필수 필드 검증 및 기본값 설정
@@ -779,6 +889,10 @@ ${textAnalyses ? `\n파일 내용:\n${textAnalyses}` : ''}
 
   } catch (parseError) {
     console.error('증빙 검증 응답 JSON 파싱 오류:', parseError);
+    console.error('파싱 실패한 JSON 내용:', jsonContent);
+    console.error('파싱 오류 위치:', parseError instanceof SyntaxError ? 
+      `Position ${(parseError as any).position || 'unknown'}` : 'unknown');
+    
     // 기본 응답 생성
     validationResult = {
       isAppropriate: false,
@@ -968,8 +1082,8 @@ async function analyzeFile(filePath: string): Promise<FileAnalysisResult> {
       // 대용량 PDF 파일 청크 처리
       if (data.text.length > 15000) {
         const chunks = chunkText(data.text, 8000);
-        const summary = `[대용량 PDF 파일: ${fileName} (${fileSize} KB, ${data.numpages} 페이지, ${chunks.length}개 청크)]\n파일이 너무 커서 요약된 내용만 분석됩니다.\n\n`;
-        const chunkContent = chunks.slice(0, 2).join('\n\n[중간 생략]\n\n'); // 처음 2개 청크만 사용
+        const summary = `[대용량 PDF 파일: ${fileName} (${fileSize} KB, ${data.numpages} 페이지, ${chunks.length}개 청크)]\n전체 내용을 분석합니다.\n\n`;
+        const chunkContent = chunks.join('\n\n'); // 모든 청크 사용
         return { type: 'text', content: summary + chunkContent, fileName };
       }
       
@@ -987,14 +1101,172 @@ async function analyzeFile(filePath: string): Promise<FileAnalysisResult> {
     // 대용량 텍스트 파일 청크 처리
     if (content.length > 15000) {
       const chunks = chunkText(content, 8000);
-      const summary = `[대용량 텍스트 파일: ${fileName} (${fileSize} KB, ${chunks.length}개 청크)]\n파일이 너무 커서 요약된 내용만 분석됩니다.\n\n`;
-      const chunkContent = chunks.slice(0, 2).join('\n\n[중간 생략]\n\n'); // 처음 2개 청크만 사용
+      const summary = `[대용량 텍스트 파일: ${fileName} (${fileSize} KB, ${chunks.length}개 청크)]\n전체 내용을 분석합니다.\n\n`;
+      const chunkContent = chunks.join('\n\n'); // 모든 청크 사용
       return { type: 'text', content: summary + chunkContent, fileName };
     }
     
     return { type: 'text', content: `[텍스트 파일 분석: ${fileName} (${fileSize} KB)]\n${content}`, fileName };
   }
   
+  // Word 파일인 경우 (.docx)
+  if (fileExtension === '.docx') {
+    try {
+      const dataBuffer = fs.readFileSync(fullPath);
+      const result = await mammoth.extractRawText({ buffer: dataBuffer });
+      const text = result.value;
+      
+      // 대용량 Word 파일 청크 처리
+      if (text.length > 15000) {
+        const chunks = chunkText(text, 8000);
+        const summary = `[대용량 Word 파일: ${fileName} (${fileSize} KB, ${chunks.length}개 청크)]\n전체 내용을 분석합니다.\n\n`;
+        const chunkContent = chunks.join('\n\n'); // 모든 청크 사용
+        return { type: 'text', content: summary + chunkContent, fileName };
+      }
+      
+      return { type: 'text', content: `[Word 파일 분석: ${fileName} (${fileSize} KB)]\n${text}`, fileName };
+    } catch (wordError) {
+      console.error('Word 파일 분석 오류:', wordError);
+      return { type: 'text', content: `[Word 파일 분석 실패: ${fileName}]`, fileName };
+    }
+  }
+
+  // Excel 파일인 경우 (.xlsx)
+  if (['.xlsx', '.xls'].includes(fileExtension)) {
+    try {
+      const dataBuffer = fs.readFileSync(fullPath);
+      const workbook = XLSX.read(dataBuffer, { type: 'buffer' });
+      
+      let allText = '';
+      workbook.SheetNames.forEach((sheetName, index) => {
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+        
+        allText += `\n=== 시트 ${index + 1}: ${sheetName} ===\n`;
+        jsonData.forEach((row: any) => {
+          if (Array.isArray(row) && row.some(cell => cell !== '')) {
+            allText += row.join('\t') + '\n';
+          }
+        });
+      });
+      
+      // 대용량 Excel 파일 청크 처리
+      if (allText.length > 15000) {
+        const chunks = chunkText(allText, 8000);
+        const summary = `[대용량 Excel 파일: ${fileName} (${fileSize} KB, ${workbook.SheetNames.length}개 시트, ${chunks.length}개 청크)]\n전체 내용을 분석합니다.\n\n`;
+        const chunkContent = chunks.join('\n\n'); // 모든 청크 사용
+        return { type: 'text', content: summary + chunkContent, fileName };
+      }
+      
+      return { type: 'text', content: `[Excel 파일 분석: ${fileName} (${fileSize} KB, ${workbook.SheetNames.length}개 시트)]\n${allText}`, fileName };
+    } catch (excelError) {
+      console.error('Excel 파일 분석 오류:', excelError);
+      return { type: 'text', content: `[Excel 파일 분석 실패: ${fileName}]`, fileName };
+    }
+  }
+
+  // PowerPoint 파일인 경우 (.pptx)
+  if (fileExtension === '.pptx') {
+    try {
+      const dataBuffer = fs.readFileSync(fullPath);
+      const zip = new AdmZip(dataBuffer);
+      const zipEntries = zip.getEntries();
+      
+      const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: '@_',
+        textNodeName: '#text'
+      });
+      
+      let allText = '';
+      let slideCount = 0;
+      
+      // 슬라이드 파일 찾기 (ppt/slides/slide*.xml)
+      const slideFiles = zipEntries.filter(entry => 
+        entry.entryName.match(/^ppt\/slides\/slide\d+\.xml$/)
+      );
+      
+      slideFiles.forEach((entry, index) => {
+        try {
+          const xmlContent = entry.getData().toString('utf-8');
+          const parsed = parser.parse(xmlContent);
+          
+          // XML에서 텍스트 추출 (a:t 태그의 텍스트)
+          const extractText = (obj: any): string => {
+            if (typeof obj === 'string') return obj;
+            if (typeof obj !== 'object' || obj === null) return '';
+            
+            let text = '';
+            if (obj['a:t'] && typeof obj['a:t'] === 'string') {
+              text += obj['a:t'] + ' ';
+            } else if (obj['a:t'] && Array.isArray(obj['a:t'])) {
+              text += obj['a:t'].map((t: any) => typeof t === 'string' ? t : t['#text'] || '').join(' ') + ' ';
+            } else if (obj['#text']) {
+              text += obj['#text'] + ' ';
+            }
+            
+            // 재귀적으로 모든 속성 탐색
+            for (const key in obj) {
+              if (key !== '@_' && key !== '#text' && key !== 'a:t') {
+                text += extractText(obj[key]);
+              }
+            }
+            
+            return text;
+          };
+          
+          const slideText = extractText(parsed);
+          if (slideText.trim()) {
+            slideCount++;
+            allText += `\n=== 슬라이드 ${slideCount} ===\n${slideText.trim()}\n`;
+          }
+        } catch (slideError) {
+          console.error(`슬라이드 ${index + 1} 파싱 오류:`, slideError);
+        }
+      });
+      
+      if (!allText.trim()) {
+        // 텍스트를 추출하지 못한 경우 안내 메시지 반환
+        return { 
+          type: 'text', 
+          content: `[PowerPoint 파일: ${fileName} (${fileSize} KB)]\n\n📋 PowerPoint 파일 안내:\n- 파일명: ${fileName}\n- 파일 크기: ${fileSize} KB\n- 문서 유형: PowerPoint 프레젠테이션\n\n⚠️ 중요 안내:\nPowerPoint 파일에서 텍스트를 추출할 수 없습니다.\n\n📄 PDF 변환 방법:\n1. PowerPoint에서 파일 열기\n2. "파일" → "다른 이름으로 저장" → "PDF" 선택\n3. 변환된 PDF 파일을 다시 업로드\n\n💡 PDF 변환 후 업로드하시면 자동 분석이 가능합니다.`, 
+          fileName 
+        };
+      }
+      
+      // 대용량 PowerPoint 파일 청크 처리
+      if (allText.length > 15000) {
+        const chunks = chunkText(allText, 8000);
+        const summary = `[대용량 PowerPoint 파일: ${fileName} (${fileSize} KB, ${slideCount}개 슬라이드, ${chunks.length}개 청크)]\n전체 내용을 분석합니다.\n\n`;
+        const chunkContent = chunks.join('\n\n'); // 모든 청크 사용
+        return { type: 'text', content: summary + chunkContent, fileName };
+      }
+      
+      return { type: 'text', content: `[PowerPoint 파일 분석: ${fileName} (${fileSize} KB, ${slideCount}개 슬라이드)]\n${allText}`, fileName };
+    } catch (pptError) {
+      console.error('PowerPoint 파일 분석 오류:', pptError);
+      return { type: 'text', content: `[PowerPoint 파일 분석 실패: ${fileName}]`, fileName };
+    }
+  }
+
+  // Word 구버전 파일인 경우 (.doc)
+  if (fileExtension === '.doc') {
+    return { 
+      type: 'text', 
+      content: `[구버전 Word 파일: ${fileName} (${fileSize} KB)]\n\n📋 Word 파일 안내:\n- 파일명: ${fileName}\n- 파일 크기: ${fileSize} KB\n- 문서 유형: Word 97-2003 문서 (.doc)\n\n⚠️ 중요 안내:\n구버전 Word 파일(.doc)은 자동 분석이 불가능합니다.\n\n📄 PDF 또는 DOCX 변환 방법:\n1. Word에서 파일 열기\n2. "파일" → "다른 이름으로 저장" → "PDF" 또는 "DOCX" 선택\n3. 변환된 파일을 다시 업로드\n\n💡 PDF 또는 DOCX 변환 후 업로드하시면 자동 분석이 가능합니다.`, 
+      fileName 
+    };
+  }
+
+  // PowerPoint 구버전 파일인 경우 (.ppt)
+  if (fileExtension === '.ppt') {
+    return { 
+      type: 'text', 
+      content: `[구버전 PowerPoint 파일: ${fileName} (${fileSize} KB)]\n\n📋 PowerPoint 파일 안내:\n- 파일명: ${fileName}\n- 파일 크기: ${fileSize} KB\n- 문서 유형: PowerPoint 97-2003 프레젠테이션 (.ppt)\n\n⚠️ 중요 안내:\n구버전 PowerPoint 파일(.ppt)은 자동 분석이 불가능합니다.\n\n📄 PDF 변환 방법:\n1. PowerPoint에서 파일 열기\n2. "파일" → "다른 이름으로 저장" → "PDF" 선택\n3. 변환된 PDF 파일을 다시 업로드\n\n💡 PDF 변환 후 업로드하시면 자동 분석이 가능합니다.`, 
+      fileName 
+    };
+  }
+
   // HWP 파일인 경우 (수동평가 대상)
   if (fileExtension === '.hwp') {
     return { 
@@ -1073,6 +1345,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (!evaluationMethod || !requiredEvidence || !resultText) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // 입력 크기 제한 (보안)
+    const maxInputLength = 500000; // 최대 50만자 (대용량 파일 고려)
+    const totalInputLength = evaluationMethod.length + requiredEvidence.length + resultText.length;
+    if (totalInputLength > maxInputLength) {
+      return res.status(400).json({ error: '입력 내용이 너무 깁니다. 이행현황을 더 간결하게 작성해주세요.' });
+    }
+
+    // 파일 개수 제한 (보안)
+    const maxFiles = 20; // 최대 20개 파일
+    if (resultFiles && resultFiles.length > maxFiles) {
+      return res.status(400).json({ error: `파일 개수가 너무 많습니다. 최대 ${maxFiles}개까지 업로드 가능합니다.` });
     }
 
     // 증빙 필수 여부 판단
@@ -1425,7 +1710,7 @@ JSON응답:
     } else {
       // 점수에 따른 상태 분류
       if (evaluationResult.complianceRate === 100) {
-        improvement = '모든 기준을 완벽하게 충족하여 추가 개선사항 없음';
+        improvement = '모든 기준을 충족하여 추가 개선사항 없음';
       } else if (evaluationResult.complianceRate >= 90) {
         improvement = '거의 모든 기준을 충족했습니다. 세부 개선사항을 확인해주세요.';
       } else if (evaluationResult.complianceRate >= 80) {

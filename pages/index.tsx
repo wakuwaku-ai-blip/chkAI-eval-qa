@@ -1393,43 +1393,42 @@ const ChecklistPage = () => {
     // '개선방안' 내용에 기반해 통과 여부를 명확히 결정
     const onlyRecommendations = hasOnlyRecommendations(improvement);
 
-    // 70% 미만이면 절대 통과가 될 수 없음
-    if (progress < 70) {
-    // 기준 미충족 조건
+    // 기준 미충족: progress === 0
     if (progress === 0) {
       return {
         status: '기준 미충족',
-        color: '#000000',
-        backgroundColor: '#f5f5f5',
-        borderColor: '#d9d9d9'
+        color: '#FF4D4F',
+        backgroundColor: '#FFF2F0',
+        borderColor: '#FFCCC7'
       };
-    }
-    
-      // 70% 미만은 모두 개선 필요
-    return {
-      status: '개선 필요',
-      color: '#ff4d4f',
-      backgroundColor: '#fff2f0',
-      borderColor: '#ffccc7'
-    };
     }
 
-    // 70% 이상일 때만 통과 가능
-    if (progress === 100 || onlyRecommendations) {
+    // 개선 필요: 0 < progress < 70
+    if (progress > 0 && progress < 70) {
+      return {
+        status: '개선 필요',
+        color: '#FAAD14',
+        backgroundColor: '#FFF7E6',
+        borderColor: '#FFD591'
+      };
+    }
+
+    // 통과: progress === 100 또는 (progress >= 70 && onlyRecommendations === true)
+    if (progress === 100 || (progress >= 70 && onlyRecommendations)) {
       return {
         status: '통과',
-        color: '#52c41a',
-        backgroundColor: '#f6ffed',
-        borderColor: '#b7eb8f'
+        color: '#52C41A',
+        backgroundColor: '#F6FFED',
+        borderColor: '#B7EB8F'
       };
     }
     
-    // 70-99% 구간에서 개선 후 재평가
+    // 개선 후 재평가: 70 <= progress < 100 && onlyRecommendations === false
     return {
       status: '개선 후 재평가',
-      color: '#faad14',
-      backgroundColor: '#fff7e6',
-      borderColor: '#ffd591'
+      color: '#FAAD14',
+      backgroundColor: '#FFF7E6',
+      borderColor: '#FFD591'
     };
   };
 
@@ -2329,35 +2328,35 @@ const ChecklistPage = () => {
       // 이행여부와 평가 결과 연동 로직
       const isPass = data.progress >= 70;
       const selectedStatus = modalState.status;
+      const onlyRecommendations = hasOnlyRecommendations(data.improvement || '');
 
       if (selectedStatus === '이행' && isPass) {
-        // 이행 선택 + 70% 이상 = 정상 통과
+        // 이행 + 70% 이상: 일치 (정상 통과)
         console.log('이행 선택과 평가 결과가 일치합니다.');
       } else if (selectedStatus === '부분이행' && isPass) {
-        // 부분이행 선택 + 70% 이상 = 권고사항만 있는지 확인
-        // basis 문자열에서 권고사항만 있는지 확인
-        const hasOnlyRecommendations = data.basis && !data.basis.includes('(필수)');
-        
-        if (hasOnlyRecommendations) {
-          alert('해당 항목은 기준을 충족하여 통과로 평가되었으나 부분이행으로 선택되어 있습니다. 이행여부를 재확인해 주세요.');
+        // 부분이행 + 70% 이상: 불일치 알림
+        if (onlyRecommendations) {
+          // 권고만 있으면
+          alert('기준을 충족하여 통과로 평가되었으나 부분이행으로 선택되어 있습니다. 이행여부를 재확인해 주세요.');
         } else {
+          // 필수 항목이 있으면
           alert('부분이행으로 선택했으나 평가 결과가 기준을 충족합니다. 이행여부를 재확인해 주세요.');
         }
       } else if (selectedStatus === '미이행' && isPass) {
-        // 미이행 선택 + 70% 이상 = 결과와 선택이 모두 잘못되었을 수 있음
+        // 미이행 + 70% 이상: 불일치 확인 요청
         const confirmRecheck = confirm('미이행으로 선택했으나 평가 결과가 기준을 충족합니다. 이행현황과 선택을 재확인하시겠습니까?');
         if (confirmRecheck) {
           // 재평가 로직 (선택사항)
           console.log('재확인 요청됨');
         }
       } else if (selectedStatus === '이행' && !isPass) {
-        // 이행 선택 + 70% 미만 = 불일치
+        // 이행 + 70% 미만: 불일치 알림
         alert('이행으로 선택했으나 평가 결과가 기준을 충족하지 못했습니다. 이행현황 내용을 보완해 주세요.');
       } else if (selectedStatus === '부분이행' && !isPass) {
-        // 부분이행 선택 + 70% 미만 = 정상 미충족
+        // 부분이행 + 70% 미만: 일치 (정상 미충족)
         console.log('부분이행 선택과 평가 결과가 일치합니다.');
       } else if (selectedStatus === '미이행' && !isPass) {
-        // 미이행 선택 + 70% 미만 = 정상 미충족
+        // 미이행 + 70% 미만: 일치 (정상 미충족)
         console.log('미이행 선택과 평가 결과가 일치합니다.');
       }
     } catch (error) {

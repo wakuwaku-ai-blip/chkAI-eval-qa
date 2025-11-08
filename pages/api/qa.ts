@@ -107,7 +107,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 ========================
       `.trim();
 
-      const systemPrompt = `정보보호 법규 전문가입니다. 참고 정보만 사용하여 간결하게 한글로 답변하세요. 외부 지식 금지.`;
+      const systemPrompt = `당신은 정보보호 법규 전문가입니다. 다음 원칙에 따라 답변해주세요:
+
+1. 우선순위: 제공된 참고 정보(평가 항목 상세 정보)를 최우선으로 활용하세요.
+2. 외부 지식 활용: 참고 정보만으로 답변이 부족하거나 불명확한 경우, 정보보호 관련 법규, 규정, 모범 사례 등 외부 지식을 활용하여 정확하고 유용한 답변을 제공하세요.
+3. 답변 형식: 간결하고 명확하게 한글로 답변하세요.
+4. 정확성: 법규나 규정을 인용할 때는 정확한 내용을 제공하세요.`;
 
       // 대화 히스토리 구성
       const conversationHistory = history.messages.map(msg => ({
@@ -115,7 +120,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         content: msg.content
       }));
 
-      // API 호출
+      // 입력 크기 제한 (보안)
+      const maxInputLength = 100000; // 최대 10만자
+      const totalInputLength = question.length + JSON.stringify(context).length + JSON.stringify(itemData).length;
+      if (totalInputLength > maxInputLength) {
+        return res.status(400).json({ error: '입력 내용이 너무 깁니다. 질문과 내용을 간결하게 작성해주세요.' });
+      }
+
+      // API 호출 (타임아웃 설정)
+      const timeoutMs = 60000; // 1분 타임아웃
       const response = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
         {
@@ -124,7 +137,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               role: 'user',
               parts: [
                 {
-                  text: `${systemPrompt}\n\n참고 정보:\n${context}\n\n질문: ${question}`
+                  text: `${systemPrompt}\n\n=== 참고 정보 (우선 활용) ===\n${context}\n\n=== 질문 ===\n${question}\n\n위 참고 정보를 우선적으로 활용하되, 필요시 정보보호 관련 법규, 규정, 모범 사례 등 외부 지식도 활용하여 정확하고 유용한 답변을 제공해주세요.`
                 }
               ]
             }
@@ -157,7 +170,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         {
           headers: {
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: timeoutMs // 타임아웃 설정
         }
       );
 
@@ -223,7 +237,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     } catch (error) {
       console.error('Q&A API 오류:', error);
-      res.status(500).json({ error: 'Q&A 처리 중 오류가 발생했습니다.' });
+      
+      // 타임아웃 오류 처리
+      if (axios.isAxiosError(error)) {
+        if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+          return res.status(408).json({ error: 'API 요청이 시간 초과되었습니다. 잠시 후 다시 시도해주세요.' });
+        }
+        if (error.response?.status === 429) {
+          return res.status(429).json({ error: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.' });
+        }
+        if (error.response?.status === 401) {
+          return res.status(500).json({ error: 'API 인증에 실패했습니다. 관리자에게 문의해주세요.' });
+        }
+        if (error.response?.status === 403) {
+          return res.status(500).json({ error: 'API 접근이 거부되었습니다. 관리자에게 문의해주세요.' });
+        }
+      }
+      
+      // 민감 정보 노출 방지 (에러 메시지에서 상세 정보 제거)
+      res.status(500).json({ error: 'Q&A 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   } else if (req.method === 'GET') {
     try {
