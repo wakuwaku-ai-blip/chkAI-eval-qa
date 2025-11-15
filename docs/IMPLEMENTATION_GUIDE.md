@@ -951,197 +951,389 @@ export default function MetricsDashboard() {
 
 ### 구현 방법
 
-#### 5.1 재시도 큐 시스템
+#### 5.1 평가 작업 모델 (MongoDB)
 
 ```typescript
-// lib/retry-queue.ts
-interface QueuedEvaluation {
-  id: string;
-  data: {
-    evaluationMethod: string;
-    requiredEvidence: string;
-    resultText: string;
-    resultFiles: string[];
-    implementationStatus?: string;
+// models/EvaluationJob.ts
+import mongoose, { Schema, Document } from 'mongoose';
+
+export interface IEvaluationJob extends Document {
+  jobId: string;
+  itemId: string; // ChecklistItem의 _id
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  priority: 'high' | 'medium' | 'low';
+  
+  // 평가 입력 데이터
+  evaluationMethod: string;
+  requiredEvidence: string;
+  resultText: string;
+  resultFiles: string[];
+  implementationStatus?: string;
+  
+  // 평가 결과
+  result?: {
+    progress: number;
+    improvement: string;
+    basis: string;
+    evidenceAnalysis: any;
   };
+  
+  // 메타데이터
   attempts: number;
   maxAttempts: number;
+  error?: string;
   createdAt: Date;
-  nextRetryAt: Date;
-  priority: 'high' | 'medium' | 'low';
+  startedAt?: Date;
+  completedAt?: Date;
+  nextRetryAt?: Date;
 }
 
-class RetryQueue {
-  private queue: QueuedEvaluation[] = [];
-  private processing: Set<string> = new Set();
+const EvaluationJobSchema: Schema = new Schema({
+  jobId: { type: String, required: true, unique: true, index: true },
+  itemId: { type: String, required: true, index: true },
+  status: {
+    type: String,
+    enum: ['pending', 'processing', 'completed', 'failed'],
+    default: 'pending',
+    index: true,
+  },
+  priority: {
+    type: String,
+    enum: ['high', 'medium', 'low'],
+    default: 'medium',
+  },
+  evaluationMethod: String,
+  requiredEvidence: String,
+  resultText: String,
+  resultFiles: [String],
+  implementationStatus: String,
+  result: Schema.Types.Mixed,
+  attempts: { type: Number, default: 0 },
+  maxAttempts: { type: Number, default: 3 },
+  error: String,
+  createdAt: { type: Date, default: Date.now, index: true },
+  startedAt: Date,
+  completedAt: Date,
+  nextRetryAt: Date,
+}, {
+  timestamps: true,
+});
 
+export default mongoose.models.EvaluationJob ||
+  mongoose.model<IEvaluationJob>('EvaluationJob', EvaluationJobSchema);
+```
+
+#### 5.2 비동기 평가 큐 시스템
+
+```typescript
+// lib/evaluation-queue.ts
+import EvaluationJob, { IEvaluationJob } from '../models/EvaluationJob';
+import ChecklistItem from '../models/ChecklistItem';
+import { callGeminiAPI } from './gemini-client';
+import crypto from 'crypto';
+
+class AsyncEvaluationQueue {
+  private processing: Set<string> = new Set();
+  private isProcessing = false;
+
+  /**
+   * 평가 작업을 큐에 추가 (즉시 응답)
+   */
   async enqueue(
-    data: QueuedEvaluation['data'],
+    itemId: string,
+    evaluationData: {
+      evaluationMethod: string;
+      requiredEvidence: string;
+      resultText: string;
+      resultFiles: string[];
+      implementationStatus?: string;
+    },
     priority: 'high' | 'medium' | 'low' = 'medium'
   ): Promise<string> {
-    const id = crypto.randomUUID();
-    const queued: QueuedEvaluation = {
-      id,
-      data,
+    const jobId = crypto.randomUUID();
+
+    const job = new EvaluationJob({
+      jobId,
+      itemId,
+      status: 'pending',
+      priority,
+      ...evaluationData,
       attempts: 0,
       maxAttempts: 3,
       createdAt: new Date(),
-      nextRetryAt: new Date(Date.now() + 60000), // 1분 후 재시도
-      priority,
-    };
-
-    this.queue.push(queued);
-    this.queue.sort((a, b) => {
-      const priorityOrder = { high: 3, medium: 2, low: 1 };
-      if (priorityOrder[b.priority] !== priorityOrder[a.priority]) {
-        return priorityOrder[b.priority] - priorityOrder[a.priority];
-      }
-      return a.nextRetryAt.getTime() - b.nextRetryAt.getTime();
     });
 
-    return id;
+    await job.save();
+
+    // 백그라운드 처리 시작 (비동기)
+    this.processQueue().catch(console.error);
+
+    return jobId;
   }
 
+  /**
+   * 큐에서 작업을 처리 (백그라운드)
+   */
   async processQueue() {
-    const now = new Date();
-    const ready = this.queue.filter(
-      (item) => item.nextRetryAt <= now && !this.processing.has(item.id)
-    );
+    // 이미 처리 중이면 스킵
+    if (this.isProcessing) return;
+    this.isProcessing = true;
 
-    for (const item of ready) {
-      this.processing.add(item.id);
-      
-      try {
-        // 평가 재시도
-        const result = await this.retryEvaluation(item);
-        this.remove(item.id);
-        return result;
-      } catch (error) {
-        item.attempts++;
-        if (item.attempts >= item.maxAttempts) {
-          // 최대 재시도 횟수 초과
-          this.remove(item.id);
-          throw new Error('최대 재시도 횟수를 초과했습니다.');
-        }
+    try {
+      // 우선순위 순으로 대기 중인 작업 조회
+      const pendingJobs = await EvaluationJob.find({
+        status: { $in: ['pending', 'failed'] },
+        $or: [
+          { nextRetryAt: { $exists: false } },
+          { nextRetryAt: { $lte: new Date() } },
+        ],
+      })
+        .sort({ priority: -1, createdAt: 1 }) // 우선순위 높은 순, 생성 시간 빠른 순
+        .limit(5); // 한 번에 최대 5개 처리
+
+      for (const job of pendingJobs) {
+        if (this.processing.has(job.jobId)) continue;
+
+        this.processing.add(job.jobId);
         
-        // Exponential Backoff로 다음 재시도 시간 설정
-        const delay = Math.min(60000 * Math.pow(2, item.attempts), 600000); // 최대 10분
-        item.nextRetryAt = new Date(Date.now() + delay);
-        this.processing.delete(item.id);
+        try {
+          await this.processJob(job);
+        } catch (error) {
+          console.error(`작업 ${job.jobId} 처리 중 오류:`, error);
+        } finally {
+          this.processing.delete(job.jobId);
+        }
+      }
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+
+  /**
+   * 개별 작업 처리
+   */
+  private async processJob(job: IEvaluationJob) {
+    // 상태를 processing으로 변경
+    job.status = 'processing';
+    job.startedAt = new Date();
+    job.attempts++;
+    await job.save();
+
+    try {
+      // 실제 평가 수행
+      const result = await this.performEvaluation(job);
+
+      // 결과 저장
+      job.status = 'completed';
+      job.result = result;
+      job.completedAt = new Date();
+      await job.save();
+
+      // ChecklistItem 업데이트
+      await this.updateChecklistItem(job.itemId, result);
+
+      console.log(`평가 작업 ${job.jobId} 완료`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      
+      job.attempts++;
+      
+      if (job.attempts >= job.maxAttempts) {
+        // 최대 재시도 횟수 초과
+        job.status = 'failed';
+        job.error = `최대 재시도 횟수 초과: ${errorMessage}`;
+        job.completedAt = new Date();
+        await job.save();
+        
+        // 실패 알림 (선택사항)
+        await this.notifyFailure(job);
+      } else {
+        // 재시도 예약
+        job.status = 'failed'; // 다음 처리 대기
+        job.error = errorMessage;
+        
+        // Exponential Backoff
+        const delay = Math.min(60000 * Math.pow(2, job.attempts - 1), 600000);
+        job.nextRetryAt = new Date(Date.now() + delay);
+        await job.save();
       }
     }
   }
 
-  private async retryEvaluation(item: QueuedEvaluation) {
-    // 실제 평가 API 호출
-    // ... 평가 로직 ...
+  /**
+   * 실제 평가 수행
+   */
+  private async performEvaluation(job: IEvaluationJob) {
+    // 기존 평가 로직 사용
+    // ... callGeminiAPI 호출 등 ...
+    
+    // 여기서는 간단한 예시
+    const evaluationResult = await callGeminiAPI(
+      {
+        prompt: `평가방법: ${job.evaluationMethod}\n이행현황: ${job.resultText}`,
+        maxOutputTokens: 4096,
+        temperature: 0.7,
+      },
+      job.priority
+    );
+
+    // 결과 파싱 및 반환
+    return {
+      progress: evaluationResult.progress || 0,
+      improvement: evaluationResult.improvement || '',
+      basis: evaluationResult.basis || '',
+      evidenceAnalysis: evaluationResult.evidenceAnalysis || {},
+    };
   }
 
-  private remove(id: string) {
-    this.queue = this.queue.filter((item) => item.id !== id);
-    this.processing.delete(id);
+  /**
+   * ChecklistItem 업데이트
+   */
+  private async updateChecklistItem(itemId: string, result: any) {
+    await ChecklistItem.findByIdAndUpdate(itemId, {
+      progress: result.progress,
+      improvement: result.improvement,
+      status: result.progress >= 80 ? '이행' : 
+             result.progress >= 50 ? '부분이행' : '미이행',
+    });
   }
 
-  getStatus(id: string) {
-    const item = this.queue.find((i) => i.id === id);
-    if (!item) return null;
+  /**
+   * 작업 상태 조회
+   */
+  async getStatus(jobId: string) {
+    const job = await EvaluationJob.findOne({ jobId });
+    if (!job) return null;
 
     return {
-      id: item.id,
-      attempts: item.attempts,
-      maxAttempts: item.maxAttempts,
-      nextRetryAt: item.nextRetryAt,
-      estimatedWaitTime: Math.max(0, item.nextRetryAt.getTime() - Date.now()),
+      jobId: job.jobId,
+      status: job.status,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      nextRetryAt: job.nextRetryAt,
+      error: job.error,
+      result: job.result,
     };
+  }
+
+  /**
+   * 특정 항목의 최신 작업 조회
+   */
+  async getLatestJob(itemId: string) {
+    return await EvaluationJob.findOne({ itemId })
+      .sort({ createdAt: -1 });
+  }
+
+  /**
+   * 실패 알림 (선택사항)
+   */
+  private async notifyFailure(job: IEvaluationJob) {
+    // 이메일, 슬랙 등으로 알림 발송
+    console.error(`평가 작업 실패: ${job.jobId}`, job.error);
   }
 }
 
-export const retryQueue = new RetryQueue();
+export const evaluationQueue = new AsyncEvaluationQueue();
 
-// 주기적으로 큐 처리
-setInterval(() => {
-  retryQueue.processQueue().catch(console.error);
-}, 30000); // 30초마다 체크
+// 주기적으로 큐 처리 (30초마다)
+if (typeof window === 'undefined') {
+  setInterval(() => {
+    evaluationQueue.processQueue().catch(console.error);
+  }, 30000);
+}
 ```
 
-#### 5.2 명확한 에러 응답 및 재시도 안내
+#### 5.3 평가 API 엔드포인트 (즉시 응답)
 
 ```typescript
 // pages/api/evaluate.ts
-import { retryQueue } from '../../lib/retry-queue';
+import { NextApiRequest, NextApiResponse } from 'next';
+import { evaluationQueue } from '../../lib/evaluation-queue';
 import { classifyError, ErrorType } from '../../lib/error-handler';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  try {
-    const { evaluationMethod, requiredEvidence, resultText, resultFiles } = req.body;
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
+  try {
+    const {
+      itemId,
+      evaluationMethod,
+      requiredEvidence,
+      resultText,
+      resultFiles,
+      implementationStatus,
+    } = req.body;
+
+    if (!itemId || !evaluationMethod || !requiredEvidence || !resultText) {
+      return res.status(400).json({ error: '필수 파라미터가 누락되었습니다.' });
+    }
+
+    // 먼저 동기적으로 평가 시도 (빠른 응답 시도)
     try {
-      // AI 평가 시도
       const evaluationResult = await callGeminiAPI(/* ... */);
-      res.status(200).json(evaluationResult);
+      
+      // 성공 시 즉시 결과 반환
+      return res.status(200).json(evaluationResult);
     } catch (error) {
       const errorInfo = classifyError(error);
 
-      // 재시도 가능한 에러인 경우 큐에 추가
-      if (errorInfo.retryable && errorInfo.type !== ErrorType.QUOTA_EXCEEDED) {
-        const queueId = await retryQueue.enqueue(
+      // Rate Limit이나 일시적 오류인 경우에만 비동기 큐에 추가
+      if (
+        errorInfo.retryable &&
+        (errorInfo.type === ErrorType.RATE_LIMIT ||
+         errorInfo.type === ErrorType.API_ERROR ||
+         errorInfo.type === ErrorType.NETWORK_ERROR)
+      ) {
+        // 비동기 큐에 추가
+        const jobId = await evaluationQueue.enqueue(
+          itemId,
           {
             evaluationMethod,
             requiredEvidence,
             resultText,
             resultFiles: resultFiles || [],
+            implementationStatus,
           },
-          'high' // 평가는 높은 우선순위
+          'high'
         );
 
-        const queueStatus = retryQueue.getStatus(queueId);
-
-        // 사용자에게 명확한 안내
+        // 즉시 응답 (202 Accepted)
         return res.status(202).json({
-          error: 'AI 평가 시스템에 일시적인 문제가 발생했습니다.',
-          message: '요청이 대기열에 추가되었습니다. 잠시 후 자동으로 재시도됩니다.',
-          queueId,
-          estimatedWaitTime: queueStatus?.estimatedWaitTime || 60000,
-          retryAfter: errorInfo.retryAfter || 60,
-          canRetry: true,
-          // 부분 결과 제공 (증빙 검증만)
-          partialResult: {
-            evidenceAnalysis: {
-              needsEvidence: requiresEvidence(requiredEvidence),
-              evidenceEvaluation: {
-                hasEvidence: (resultFiles || []).length > 0,
-                evidenceQuality: (resultFiles || []).length > 0 ? 'medium' : 'none',
-              },
-            },
-          },
+          success: true,
+          message: '평가 요청이 접수되었습니다. 평가 가능 시간에 자동으로 평가되어 반영됩니다.',
+          jobId,
+          status: 'pending',
+          note: '페이지를 떠나셔도 평가는 계속 진행되며, 완료 후 자동으로 반영됩니다.',
         });
       }
 
       // 재시도 불가능한 에러
-      res.status(500).json({
+      return res.status(500).json({
         error: errorInfo.userMessage,
         type: errorInfo.type,
         canRetry: false,
-        recommendation: errorInfo.type === ErrorType.QUOTA_EXCEEDED
-          ? '일일 사용량 한도를 초과했습니다. 내일 다시 시도해주세요.'
-          : '잠시 후 다시 시도해주시거나 관리자에게 문의해주세요.',
       });
     }
   } catch (error) {
+    console.error('Evaluation API error:', error);
     res.status(500).json({
       error: '평가 처리 중 예상치 못한 오류가 발생했습니다.',
-      canRetry: false,
     });
   }
 }
 ```
 
-#### 5.3 큐 상태 확인 API
+#### 5.4 작업 상태 확인 API
 
 ```typescript
 // pages/api/evaluate/status.ts
 import { NextApiRequest, NextApiResponse } from 'next';
-import { retryQueue } from '../../../lib/retry-queue';
+import { evaluationQueue } from '../../../lib/evaluation-queue';
 
 export default async function handler(
   req: NextApiRequest,
@@ -1151,32 +1343,53 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { queueId } = req.query;
+  const { jobId, itemId } = req.query;
 
-  if (!queueId || typeof queueId !== 'string') {
-    return res.status(400).json({ error: 'queueId가 필요합니다.' });
+  if (jobId && typeof jobId === 'string') {
+    // 특정 작업 조회
+    const status = await evaluationQueue.getStatus(jobId);
+    
+    if (!status) {
+      return res.status(404).json({
+        error: '작업을 찾을 수 없습니다.',
+        message: '이미 처리되었거나 존재하지 않는 작업입니다.',
+      });
+    }
+
+    return res.status(200).json(status);
   }
 
-  const status = retryQueue.getStatus(queueId);
+  if (itemId && typeof itemId === 'string') {
+    // 항목의 최신 작업 조회
+    const job = await evaluationQueue.getLatestJob(itemId);
+    
+    if (!job) {
+      return res.status(404).json({
+        error: '평가 작업을 찾을 수 없습니다.',
+      });
+    }
 
-  if (!status) {
-    return res.status(404).json({
-      error: '대기열에서 찾을 수 없습니다.',
-      message: '이미 처리되었거나 만료되었을 수 있습니다.',
+    return res.status(200).json({
+      jobId: job.jobId,
+      status: job.status,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      nextRetryAt: job.nextRetryAt,
+      error: job.error,
+      result: job.result,
     });
   }
 
-  res.status(200).json({
-    status: status.attempts < status.maxAttempts ? 'pending' : 'failed',
-    attempts: status.attempts,
-    maxAttempts: status.maxAttempts,
-    nextRetryAt: status.nextRetryAt,
-    estimatedWaitTime: status.estimatedWaitTime,
+  return res.status(400).json({
+    error: 'jobId 또는 itemId가 필요합니다.',
   });
 }
 ```
 
-#### 5.4 프론트엔드 재시도 처리
+#### 5.5 프론트엔드 처리 (선택적 폴링)
 
 ```typescript
 // 프론트엔드에서 사용 예시
@@ -1191,40 +1404,29 @@ async function handleEvaluate(data: EvaluationData) {
     const result = await response.json();
 
     if (response.status === 202) {
-      // 대기열에 추가됨 - 폴링으로 상태 확인
-      const queueId = result.queueId;
+      // 비동기 처리 시작됨
+      const jobId = result.jobId;
       
+      // 사용자에게 안내 메시지 표시
       showMessage({
-        type: 'info',
-        message: 'AI 평가 시스템이 일시적으로 사용량이 많습니다. 잠시 후 자동으로 재시도됩니다.',
-        duration: 0, // 자동 닫기 안 함
+        type: 'success',
+        message: result.message || '평가 요청이 접수되었습니다. 평가 가능 시간에 자동으로 평가되어 반영됩니다.',
+        description: result.note || '페이지를 떠나셔도 평가는 계속 진행되며, 완료 후 자동으로 반영됩니다.',
+        duration: 5, // 5초 후 자동 닫기
       });
 
-      // 폴링으로 상태 확인
-      const pollInterval = setInterval(async () => {
-        const statusResponse = await fetch(`/api/evaluate/status?queueId=${queueId}`);
-        const status = await statusResponse.json();
-
-        if (status.status === 'completed') {
-          clearInterval(pollInterval);
-          // 결과 표시
-          showEvaluationResult(status.result);
-        } else if (status.status === 'failed') {
-          clearInterval(pollInterval);
-          showMessage({
-            type: 'error',
-            message: '자동 재시도가 실패했습니다. 수동으로 다시 시도해주세요.',
-          });
-        }
-      }, 5000); // 5초마다 확인
-
-      // 부분 결과 표시
-      if (result.partialResult) {
-        showPartialResult(result.partialResult);
+      // 선택적: 페이지에 있을 때만 상태 확인 (폴링)
+      // 사용자가 페이지를 떠나도 백그라운드에서 계속 처리됨
+      if (shouldPollStatus()) {
+        pollJobStatus(jobId, data.itemId);
       }
+
+      // 로컬 스토리지에 jobId 저장 (나중에 확인용)
+      localStorage.setItem(`evaluation_${data.itemId}`, jobId);
     } else if (response.ok) {
-      // 정상 결과
+      // 즉시 평가 완료
       showEvaluationResult(result);
+      updateUI(result);
     } else {
       // 에러
       showMessage({
@@ -1238,6 +1440,85 @@ async function handleEvaluate(data: EvaluationData) {
       message: '네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
     });
   }
+}
+
+// 작업 상태 폴링 (선택적)
+function pollJobStatus(jobId: string, itemId: string) {
+  const pollInterval = setInterval(async () => {
+    try {
+      const statusResponse = await fetch(`/api/evaluate/status?jobId=${jobId}`);
+      
+      if (!statusResponse.ok) {
+        clearInterval(pollInterval);
+        return;
+      }
+
+      const status = await statusResponse.json();
+
+      if (status.status === 'completed') {
+        clearInterval(pollInterval);
+        localStorage.removeItem(`evaluation_${itemId}`);
+        
+        // 결과 표시
+        showEvaluationResult(status.result);
+        updateUI(status.result);
+        
+        showMessage({
+          type: 'success',
+          message: '평가가 완료되었습니다.',
+        });
+      } else if (status.status === 'failed') {
+        clearInterval(pollInterval);
+        localStorage.removeItem(`evaluation_${itemId}`);
+        
+        showMessage({
+          type: 'error',
+          message: '평가 처리 중 오류가 발생했습니다. 다시 시도해주세요.',
+        });
+      }
+      // pending 또는 processing 상태면 계속 대기
+    } catch (error) {
+      console.error('상태 확인 오류:', error);
+      // 에러가 나도 계속 폴링 (네트워크 일시적 문제일 수 있음)
+    }
+  }, 5000); // 5초마다 확인
+
+  // 최대 5분간 폴링 (그 이후는 백그라운드에서 처리)
+  setTimeout(() => {
+    clearInterval(pollInterval);
+  }, 5 * 60 * 1000);
+}
+
+// 페이지 로드 시 미완료 작업 확인
+function checkPendingEvaluations() {
+  const items = document.querySelectorAll('[data-item-id]');
+  
+  items.forEach((item) => {
+    const itemId = item.getAttribute('data-item-id');
+    if (!itemId) return;
+
+    const jobId = localStorage.getItem(`evaluation_${itemId}`);
+    if (!jobId) return;
+
+    // 작업 상태 확인
+    fetch(`/api/evaluate/status?jobId=${jobId}`)
+      .then((res) => res.json())
+      .then((status) => {
+        if (status.status === 'completed') {
+          localStorage.removeItem(`evaluation_${itemId}`);
+          updateUI(status.result);
+        } else if (status.status === 'failed') {
+          localStorage.removeItem(`evaluation_${itemId}`);
+        }
+        // pending이나 processing이면 계속 대기
+      })
+      .catch(console.error);
+  });
+}
+
+// 페이지 로드 시 실행
+if (typeof window !== 'undefined') {
+  window.addEventListener('load', checkPendingEvaluations);
 }
 ```
 
@@ -1277,19 +1558,41 @@ async function validateEvidenceWithFallback(
 
 ### 권장 전략 요약
 
-| 상황 | 처리 방법 | 이유 |
-|------|-----------|------|
-| **일시적 네트워크 오류** | 재시도 큐에 추가 | 자동 복구 가능 |
-| **Rate Limit 초과** | 재시도 큐에 추가 (지연 후) | 시간이 지나면 해결 |
-| **Quota 초과** | 명확한 에러 메시지 | 재시도 불가능 |
-| **API 서버 오류 (5xx)** | 재시도 큐에 추가 | 일시적 문제 |
-| **영구적 오류** | 명확한 에러 메시지 | 재시도 불가능 |
+| 상황 | 처리 방법 | 사용자 경험 |
+|------|-----------|-------------|
+| **즉시 평가 성공** | 200 OK로 결과 즉시 반환 | 즉시 결과 확인 가능 |
+| **Rate Limit 초과** | 비동기 큐에 추가, 202 Accepted | "평가 가능 시간에 자동으로 평가되어 반영됩니다" 메시지 |
+| **일시적 네트워크 오류** | 비동기 큐에 추가, 202 Accepted | 백그라운드에서 자동 재시도 |
+| **API 서버 오류 (5xx)** | 비동기 큐에 추가, 202 Accepted | 자동 재시도 후 결과 반영 |
+| **Quota 초과** | 명확한 에러 메시지, 500 | "일일 사용량 한도를 초과했습니다" 안내 |
+| **영구적 오류** | 명확한 에러 메시지, 500 | 관리자 문의 안내 |
+
+### 주요 특징
+
+**✅ 즉시 응답 (202 Accepted)**
+- 사용자가 평가 버튼을 누르면 즉시 응답
+- 오래 기다릴 필요 없음
+- 페이지를 떠나도 평가는 계속 진행
+
+**✅ 백그라운드 처리**
+- MongoDB에 작업 저장
+- 30초마다 큐 처리
+- 사용자가 로그아웃해도 계속 진행
+
+**✅ 자동 결과 반영**
+- 평가 완료 시 ChecklistItem 자동 업데이트
+- 사용자가 다시 접속하면 결과 확인 가능
+
+**✅ 선택적 폴링**
+- 페이지에 있을 때만 상태 확인 (선택사항)
+- localStorage에 jobId 저장하여 나중에 확인 가능
 
 **핵심 원칙:**
-- ✅ **품질 우선**: 규칙 기반 평가로 대체하지 않고, 재시도 또는 명확한 에러 안내
-- ✅ **투명성**: 사용자에게 상황을 명확히 알림
-- ✅ **자동화**: 가능한 경우 자동 재시도
-- ✅ **부분 결과**: 가능한 경우 부분 결과 제공 (증빙 검증 등)
+- ✅ **즉시 응답**: 사용자가 오래 기다리지 않도록
+- ✅ **백그라운드 처리**: 사용자가 떠나도 평가 계속 진행
+- ✅ **자동 반영**: 완료 후 자동으로 결과 업데이트
+- ✅ **투명성**: 상황을 명확히 안내
+- ✅ **품질 유지**: 규칙 기반 폴백 없이 AI 평가만 사용
 
 ---
 
