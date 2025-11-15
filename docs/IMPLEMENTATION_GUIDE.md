@@ -645,10 +645,11 @@ interface APIMetrics {
   timestamp: Date;
   endpoint: string;
   requestId: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  cost: number;
+  inputTokens: number;        // 실제 API 응답의 promptTokenCount
+  outputTokens: number;       // 실제 API 응답의 candidatesTokenCount
+  totalTokens: number;       // 실제 API 응답의 totalTokenCount
+  cachedTokens?: number;     // 실제 API 응답의 cachedContentTokenCount (선택적)
+  cost: number;              // 실제 사용량 기반 계산된 비용
   duration: number;
   status: 'success' | 'error';
   errorCode?: string;
@@ -686,18 +687,50 @@ class MetricsCollector {
   }
 
   getSummary() {
-    const recent = this.getMetrics('day');
-    const successful = recent.filter((m) => m.status === 'success');
-    
+    const now = Date.now();
+    const oneMinuteAgo = now - 60 * 1000;
+    const oneHourAgo = now - 60 * 60 * 1000;
+    const oneDayAgo = now - 24 * 60 * 60 * 1000;
+
+    // 실제 수집된 메트릭 필터링
+    const lastMinute = this.metrics.filter(m => m.timestamp.getTime() >= oneMinuteAgo);
+    const lastHour = this.metrics.filter(m => m.timestamp.getTime() >= oneHourAgo);
+    const lastDay = this.metrics.filter(m => m.timestamp.getTime() >= oneDayAgo);
+
+    const successfulLastMinute = lastMinute.filter(m => m.status === 'success');
+    const successfulLastHour = lastHour.filter(m => m.status === 'success');
+    const successfulLastDay = lastDay.filter(m => m.status === 'success');
+
+    // 실제 API 응답 값 기반 계산
     return {
-      totalRequests: recent.length,
-      successfulRequests: successful.length,
-      errorRate: (recent.length - successful.length) / recent.length,
-      totalTokens: recent.reduce((sum, m) => sum + m.totalTokens, 0),
-      totalCost: recent.reduce((sum, m) => sum + m.cost, 0),
-      avgDuration: successful.reduce((sum, m) => sum + m.duration, 0) / successful.length,
-      requestsPerMinute: recent.length / (24 * 60),
-      tokensPerMinute: recent.reduce((sum, m) => sum + m.totalTokens, 0) / (24 * 60),
+      // 최근 1분간 실제 사용량
+      requestsPerMinute: lastMinute.length,  // 실제 1분간 요청 수
+      tokensPerMinute: lastMinute.reduce((sum, m) => sum + m.totalTokens, 0),  // 실제 1분간 토큰 사용량
+      
+      // 최근 1시간간 실제 사용량
+      requestsPerHour: lastHour.length,
+      tokensPerHour: lastHour.reduce((sum, m) => sum + m.totalTokens, 0),
+      costPerHour: lastHour.reduce((sum, m) => sum + m.cost, 0),
+      
+      // 최근 1일간 실제 사용량
+      totalRequests: lastDay.length,
+      successfulRequests: successfulLastDay.length,
+      failedRequests: lastDay.length - successfulLastDay.length,
+      errorRate: lastDay.length > 0 ? (lastDay.length - successfulLastDay.length) / lastDay.length : 0,
+      
+      // 실제 토큰 사용량 합계 (API 응답의 totalTokenCount 합계)
+      totalTokens: lastDay.reduce((sum, m) => sum + m.totalTokens, 0),
+      totalInputTokens: lastDay.reduce((sum, m) => sum + m.inputTokens, 0),
+      totalOutputTokens: lastDay.reduce((sum, m) => sum + m.outputTokens, 0),
+      totalCachedTokens: lastDay.reduce((sum, m) => sum + (m.cachedTokens || 0), 0),
+      
+      // 실제 비용 합계 (실제 사용량 기반 계산)
+      totalCost: lastDay.reduce((sum, m) => sum + m.cost, 0),
+      
+      // 평균 응답 시간 (성공한 요청만)
+      avgDuration: successfulLastDay.length > 0
+        ? successfulLastDay.reduce((sum, m) => sum + m.duration, 0) / successfulLastDay.length
+        : 0,
     };
   }
 
@@ -710,7 +743,9 @@ class MetricsCollector {
 export const metricsCollector = new MetricsCollector();
 ```
 
-#### 4.2 API 호출 래퍼에 메트릭 수집 추가
+#### 4.2 API 호출 래퍼에 메트릭 수집 추가 (실제 API 응답 값 사용)
+
+**중요**: Gemini API 응답의 `usageMetadata`에서 실제 토큰 사용량을 추출하여 사용합니다.
 
 ```typescript
 // lib/gemini-client.ts (수정)
@@ -728,29 +763,71 @@ export async function callGeminiAPI(
       requestId,
       async () => {
         // API 호출 로직
-        const response = await fetch(/* ... */);
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
         const data = await response.json();
         
-        // 토큰 사용량 추출
-        const usage = data.usageMetadata || {};
-        const inputTokens = usage.promptTokenCount || 0;
-        const outputTokens = usage.candidatesTokenCount || 0;
-        const totalTokens = usage.totalTokenCount || 0;
+        // ⚠️ 중요: Gemini API 응답의 실제 usageMetadata에서 토큰 사용량 추출
+        // 응답 구조:
+        // {
+        //   "candidates": [...],
+        //   "usageMetadata": {
+        //     "promptTokenCount": 6153,        // 실제 입력 토큰 수
+        //     "candidatesTokenCount": 244,     // 실제 출력 토큰 수
+        //     "totalTokenCount": 8727,        // 실제 총 토큰 수
+        //     "cachedContentTokenCount": 5473 // 캐시된 콘텐츠 토큰 수 (선택적)
+        //   }
+        // }
+        
+        const usageMetadata = data.usageMetadata;
+        if (!usageMetadata) {
+          console.warn('usageMetadata가 응답에 없습니다:', data);
+        }
+
+        // 실제 API 응답에서 받은 토큰 사용량
+        const inputTokens = usageMetadata?.promptTokenCount || 0;
+        const outputTokens = usageMetadata?.candidatesTokenCount || 0;
+        const totalTokens = usageMetadata?.totalTokenCount || 0;
+        const cachedTokens = usageMetadata?.cachedContentTokenCount || 0;
 
         // 비용 계산 (Gemini 2.5 Flash 기준)
-        const cost = (inputTokens / 1000000) * 0.30 + (outputTokens / 1000000) * 2.50;
+        // 입력: $0.30 / 100만 토큰, 출력: $2.50 / 100만 토큰
+        const inputCost = (inputTokens / 1000000) * 0.30;
+        const outputCost = (outputTokens / 1000000) * 2.50;
+        const totalCost = inputCost + outputCost;
 
-        // 메트릭 기록
+        // 실제 사용량 메트릭 기록
         metricsCollector.record({
           timestamp: new Date(),
           endpoint: 'gemini-api',
           requestId,
+          inputTokens,      // 실제 API 응답 값
+          outputTokens,     // 실제 API 응답 값
+          totalTokens,      // 실제 API 응답 값
+          cachedTokens,     // 캐시된 토큰 (선택적)
+          cost: totalCost,  // 실제 사용량 기반 계산
+          duration: Date.now() - startTime,
+          status: 'success',
+        });
+
+        // 로깅 (디버깅용)
+        console.log('Gemini API 사용량:', {
           inputTokens,
           outputTokens,
           totalTokens,
-          cost,
-          duration: Date.now() - startTime,
-          status: 'success',
+          cachedTokens,
+          cost: totalCost.toFixed(6),
         });
 
         return data;
@@ -760,7 +837,7 @@ export async function callGeminiAPI(
 
     return result;
   } catch (error) {
-    // 에러 메트릭 기록
+    // 에러 메트릭 기록 (실제 사용량 없음)
     metricsCollector.record({
       timestamp: new Date(),
       endpoint: 'gemini-api',
@@ -768,6 +845,7 @@ export async function callGeminiAPI(
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      cachedTokens: 0,
       cost: 0,
       duration: Date.now() - startTime,
       status: 'error',
@@ -777,6 +855,33 @@ export async function callGeminiAPI(
   }
 }
 ```
+
+**실제 API 응답 예시:**
+```json
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [{"text": "..."}],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 6153,
+    "candidatesTokenCount": 244,
+    "totalTokenCount": 8727,
+    "cachedContentTokenCount": 5473
+  }
+}
+```
+
+**주의사항:**
+- `usageMetadata`가 없는 경우를 대비한 기본값 처리 필요
+- `cachedContentTokenCount`는 선택적 필드 (캐시 사용 시에만 존재)
+- 모든 토큰 값은 실제 API 응답에서 받은 값을 사용 (추정치 사용 금지)
 
 #### 4.3 모니터링 API 엔드포인트
 
@@ -814,14 +919,31 @@ import { useEffect, useState } from 'react';
 import { Card, Statistic, Table, Alert } from 'antd';
 
 interface MetricsSummary {
+  // 최근 1분간 실제 사용량
+  requestsPerMinute: number;      // 실제 1분간 요청 수
+  tokensPerMinute: number;        // 실제 1분간 토큰 사용량 (API 응답의 totalTokenCount 합계)
+  
+  // 최근 1시간간 실제 사용량
+  requestsPerHour: number;
+  tokensPerHour: number;
+  costPerHour: number;
+  
+  // 최근 1일간 실제 사용량
   totalRequests: number;
   successfulRequests: number;
+  failedRequests: number;
   errorRate: number;
-  totalTokens: number;
+  
+  // 실제 토큰 사용량 (API 응답 값 합계)
+  totalTokens: number;            // 실제 totalTokenCount 합계
+  totalInputTokens: number;       // 실제 promptTokenCount 합계
+  totalOutputTokens: number;      // 실제 candidatesTokenCount 합계
+  totalCachedTokens: number;      // 실제 cachedContentTokenCount 합계
+  
+  // 실제 비용 (실제 사용량 기반 계산)
   totalCost: number;
+  
   avgDuration: number;
-  requestsPerMinute: number;
-  tokensPerMinute: number;
 }
 
 export default function MetricsDashboard() {
@@ -877,9 +999,10 @@ export default function MetricsDashboard() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginTop: 16 }}>
         <Card>
           <Statistic
-            title="총 요청 수"
+            title="총 요청 수 (1일)"
             value={summary.totalRequests}
             suffix="건"
+            description={`성공: ${summary.successfulRequests}건, 실패: ${summary.failedRequests}건`}
           />
         </Card>
         <Card>
@@ -892,34 +1015,64 @@ export default function MetricsDashboard() {
         </Card>
         <Card>
           <Statistic
-            title="총 토큰"
-            value={summary.totalTokens}
+            title="총 토큰 (1일)"
+            value={summary.totalTokens.toLocaleString()}
             suffix="토큰"
+            description={`입력: ${summary.totalInputTokens.toLocaleString()}, 출력: ${summary.totalOutputTokens.toLocaleString()}`}
           />
         </Card>
         <Card>
           <Statistic
-            title="총 비용"
+            title="총 비용 (1일)"
             value={summary.totalCost}
-            precision={4}
+            precision={6}
             prefix="$"
+            description={`시간당: $${summary.costPerHour.toFixed(6)}`}
           />
         </Card>
       </div>
 
+      {/* 실시간 사용량 카드 */}
+      <Card title="실시간 사용량 (최근 1분)" style={{ marginTop: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+          <Statistic
+            title="분당 요청 수 (RPM)"
+            value={summary.requestsPerMinute}
+            suffix="RPM"
+            valueStyle={{ color: summary.requestsPerMinute > 10 ? '#cf1322' : '#3f8600' }}
+          />
+          <Statistic
+            title="분당 토큰 수 (TPM)"
+            value={summary.tokensPerMinute.toLocaleString()}
+            suffix="TPM"
+            valueStyle={{ color: summary.tokensPerMinute > 800000 ? '#cf1322' : '#3f8600' }}
+          />
+        </div>
+      </Card>
+
       {/* 상세 메트릭 */}
-      <Card title="상세 통계" style={{ marginTop: 16 }}>
+      <Card title="상세 통계 (실제 API 사용량 기반)" style={{ marginTop: 16 }}>
         <Table
           dataSource={[
             { key: '1', label: '평균 응답 시간', value: `${summary.avgDuration.toFixed(2)}ms` },
-            { key: '2', label: '분당 요청 수', value: `${summary.requestsPerMinute.toFixed(2)} RPM` },
-            { key: '3', label: '분당 토큰 수', value: `${summary.tokensPerMinute.toFixed(0)} TPM` },
+            { key: '2', label: '분당 요청 수 (RPM)', value: `${summary.requestsPerMinute} RPM` },
+            { key: '3', label: '분당 토큰 수 (TPM)', value: `${summary.tokensPerMinute.toLocaleString()} TPM` },
+            { key: '4', label: '시간당 요청 수', value: `${summary.requestsPerHour}건` },
+            { key: '5', label: '시간당 토큰 수', value: `${summary.tokensPerHour.toLocaleString()} 토큰` },
+            { key: '6', label: '시간당 비용', value: `$${summary.costPerHour.toFixed(6)}` },
+            { key: '7', label: '캐시된 토큰 (1일)', value: `${summary.totalCachedTokens.toLocaleString()} 토큰` },
           ]}
           columns={[
             { title: '항목', dataIndex: 'label', key: 'label' },
-            { title: '값', dataIndex: 'value', key: 'value' },
+            { title: '값 (실제 API 응답 기반)', dataIndex: 'value', key: 'value' },
           ]}
           pagination={false}
+        />
+        <Alert
+          message="모든 값은 Gemini API 응답의 usageMetadata에서 추출한 실제 값입니다."
+          type="info"
+          showIcon
+          style={{ marginTop: 16 }}
         />
       </Card>
     </div>
@@ -2036,10 +2189,14 @@ k6 run scripts/load-test-k6.js
 
 ### 구현 방법
 
-#### 8.1 알림 서비스
+#### 8.1 알림 서비스 (실제 API 사용량 기반)
+
+**중요**: 모든 임계값은 실제 Gemini API 응답에서 받은 `usageMetadata` 값을 기반으로 계산합니다.
 
 ```typescript
 // lib/alert-service.ts
+import { metricsCollector } from './metrics';
+
 interface AlertThreshold {
   type: 'rpm' | 'tpm' | 'cost' | 'errorRate' | 'queueLength';
   threshold: number;
@@ -2048,12 +2205,13 @@ interface AlertThreshold {
 
 class AlertService {
   private thresholds: AlertThreshold[] = [
-    { type: 'rpm', threshold: 10, severity: 'warning' },
-    { type: 'rpm', threshold: 14, severity: 'critical' },
-    { type: 'tpm', threshold: 800000, severity: 'warning' },
-    { type: 'tpm', threshold: 950000, severity: 'critical' },
-    { type: 'errorRate', threshold: 0.1, severity: 'warning' },
-    { type: 'errorRate', threshold: 0.2, severity: 'critical' },
+    // 무료 플랜 기준 (15 RPM, 1,000,000 TPM)
+    { type: 'rpm', threshold: 10, severity: 'warning' },        // 15의 67%
+    { type: 'rpm', threshold: 14, severity: 'critical' },        // 15의 93%
+    { type: 'tpm', threshold: 800000, severity: 'warning' },     // 1,000,000의 80%
+    { type: 'tpm', threshold: 950000, severity: 'critical' },     // 1,000,000의 95%
+    { type: 'errorRate', threshold: 0.1, severity: 'warning' },  // 10%
+    { type: 'errorRate', threshold: 0.2, severity: 'critical' }, // 20%
     { type: 'queueLength', threshold: 50, severity: 'warning' },
     { type: 'queueLength', threshold: 100, severity: 'critical' },
   ];
@@ -2061,9 +2219,16 @@ class AlertService {
   private alertHistory: Map<string, number> = new Map();
   private cooldownPeriod = 5 * 60 * 1000; // 5분
 
-  async checkAndAlert(metrics: any) {
+  /**
+   * 실제 수집된 메트릭을 기반으로 알림 체크
+   */
+  async checkAndAlert() {
+    // 실제 수집된 메트릭 가져오기
+    const recentMetrics = metricsCollector.getMetrics('hour'); // 최근 1시간
+    const summary = this.calculateRealTimeMetrics(recentMetrics);
+
     for (const threshold of this.thresholds) {
-      const value = this.getValue(metrics, threshold.type);
+      const value = this.getValue(summary, threshold.type);
       const alertKey = `${threshold.type}-${threshold.severity}`;
 
       if (value >= threshold.threshold) {
@@ -2073,31 +2238,89 @@ class AlertService {
           continue; // 쿨다운 중
         }
 
-        await this.sendAlert(threshold, value);
+        await this.sendAlert(threshold, value, summary);
         this.alertHistory.set(alertKey, Date.now());
       }
     }
   }
 
-  private getValue(metrics: any, type: string): number {
+  /**
+   * 실제 수집된 메트릭으로부터 실시간 통계 계산
+   */
+  private calculateRealTimeMetrics(metrics: APIMetrics[]) {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60 * 1000;
+    const oneHourAgo = now - 60 * 60 * 1000;
+
+    // 최근 1분간 메트릭
+    const lastMinute = metrics.filter(m => m.timestamp.getTime() >= oneMinuteAgo);
+    // 최근 1시간간 메트릭
+    const lastHour = metrics.filter(m => m.timestamp.getTime() >= oneHourAgo);
+
+    // 실제 API 응답 값 기반 계산
+    const successful = lastHour.filter(m => m.status === 'success');
+    const failed = lastHour.filter(m => m.status === 'error');
+
+    // 실제 토큰 사용량 합계 (API 응답의 totalTokenCount 합계)
+    const totalTokensLastMinute = lastMinute.reduce(
+      (sum, m) => sum + m.totalTokens, 0
+    );
+    const totalTokensLastHour = lastHour.reduce(
+      (sum, m) => sum + m.totalTokens, 0
+    );
+
+    // 실제 비용 합계 (실제 사용량 기반 계산된 cost 합계)
+    const totalCostLastHour = lastHour.reduce(
+      (sum, m) => sum + m.cost, 0
+    );
+
+    return {
+      // 실제 RPM (최근 1분간 요청 수)
+      requestsPerMinute: lastMinute.length,
+      
+      // 실제 TPM (최근 1분간 실제 API 응답의 totalTokenCount 합계)
+      tokensPerMinute: totalTokensLastMinute,
+      
+      // 실제 시간당 토큰 사용량
+      tokensPerHour: totalTokensLastHour,
+      
+      // 실제 비용 (실제 사용량 기반)
+      hourlyCost: totalCostLastHour,
+      
+      // 실제 에러율
+      errorRate: lastHour.length > 0 ? failed.length / lastHour.length : 0,
+      
+      // 총 요청 수
+      totalRequests: lastHour.length,
+      
+      // 성공 요청 수
+      successfulRequests: successful.length,
+    };
+  }
+
+  private getValue(summary: any, type: string): number {
     switch (type) {
       case 'rpm':
-        return metrics.requestsPerMinute || 0;
+        return summary.requestsPerMinute || 0;  // 실제 1분간 요청 수
       case 'tpm':
-        return metrics.tokensPerMinute || 0;
+        return summary.tokensPerMinute || 0;    // 실제 1분간 토큰 사용량
       case 'cost':
-        return metrics.dailyCost || 0;
+        return summary.hourlyCost || 0;         // 실제 시간당 비용
       case 'errorRate':
-        return metrics.errorRate || 0;
+        return summary.errorRate || 0;           // 실제 에러율
       case 'queueLength':
-        return metrics.queueLength || 0;
+        return summary.queueLength || 0;        // 큐 길이
       default:
         return 0;
     }
   }
 
-  private async sendAlert(threshold: AlertThreshold, value: number) {
-    const message = this.formatAlertMessage(threshold, value);
+  private async sendAlert(
+    threshold: AlertThreshold,
+    value: number,
+    summary: any
+  ) {
+    const message = this.formatAlertMessage(threshold, value, summary);
 
     // 이메일 알림 (선택사항)
     // await sendEmail(process.env.ADMIN_EMAIL, 'API 사용량 알림', message);
@@ -2109,26 +2332,46 @@ class AlertService {
     console.error(`[ALERT] ${threshold.severity.toUpperCase()}:`, message);
 
     // 데이터베이스에 기록 (선택사항)
-    // await saveAlertToDatabase({ threshold, value, message, timestamp: new Date() });
+    // await saveAlertToDatabase({
+    //   threshold,
+    //   value,
+    //   summary,  // 실제 사용량 상세 정보 포함
+    //   message,
+    //   timestamp: new Date()
+    // });
   }
 
-  private formatAlertMessage(threshold: AlertThreshold, value: number): string {
+  private formatAlertMessage(
+    threshold: AlertThreshold,
+    value: number,
+    summary: any
+  ): string {
     const typeNames = {
-      rpm: '분당 요청 수',
-      tpm: '분당 토큰 수',
-      cost: '일일 비용',
+      rpm: '분당 요청 수 (RPM)',
+      tpm: '분당 토큰 수 (TPM)',
+      cost: '시간당 비용',
       errorRate: '에러율',
       queueLength: '큐 대기 길이',
     };
 
-    return `${typeNames[threshold.type]}이(가) 임계값(${threshold.threshold})을 초과했습니다. 현재 값: ${value.toFixed(2)}`;
+    let message = `${typeNames[threshold.type]}이(가) 임계값(${threshold.threshold})을 초과했습니다.\n`;
+    message += `현재 값: ${value.toFixed(2)}\n\n`;
+    message += `실제 사용량 상세:\n`;
+    message += `- 최근 1분간 요청 수: ${summary.requestsPerMinute}건\n`;
+    message += `- 최근 1분간 토큰 사용량: ${summary.tokensPerMinute.toLocaleString()} 토큰\n`;
+    message += `- 최근 1시간간 토큰 사용량: ${summary.tokensPerHour.toLocaleString()} 토큰\n`;
+    message += `- 최근 1시간간 비용: $${summary.hourlyCost.toFixed(6)}\n`;
+    message += `- 에러율: ${(summary.errorRate * 100).toFixed(2)}%\n`;
+    message += `- 총 요청 수: ${summary.totalRequests}건 (성공: ${summary.successfulRequests}건)`;
+
+    return message;
   }
 }
 
 export const alertService = new AlertService();
 ```
 
-#### 8.2 주기적 모니터링 및 알림
+#### 8.2 주기적 모니터링 및 알림 (실제 사용량 기반)
 
 ```typescript
 // lib/monitor.ts
@@ -2138,21 +2381,25 @@ import { alertService } from './alert-service';
 
 export function startMonitoring() {
   setInterval(async () => {
-    // 메트릭 수집
+    // 실제 수집된 메트릭 기반으로 알림 체크
+    await alertService.checkAndAlert();
+
+    // 실제 사용량 통계 로그 출력
+    const recentMetrics = metricsCollector.getMetrics('hour');
     const summary = metricsCollector.getSummary();
     const queueStatus = geminiRequestQueue.getQueueStatus();
 
-    // 알림 체크
-    await alertService.checkAndAlert({
-      ...summary,
-      queueLength: queueStatus.queueLength,
-    });
-
-    // 로그 출력
-    console.log('Monitoring:', {
+    console.log('Monitoring (실제 사용량 기반):', {
       timestamp: new Date().toISOString(),
-      ...summary,
-      queueStatus,
+      // 실제 API 응답 값 기반 통계
+      requestsPerMinute: summary.requestsPerMinute,
+      tokensPerMinute: summary.tokensPerMinute,
+      totalTokens: summary.totalTokens,
+      totalCost: summary.totalCost,
+      errorRate: summary.errorRate,
+      // 큐 상태
+      queueLength: queueStatus.queueLength,
+      currentConcurrent: queueStatus.currentConcurrent,
     });
   }, 60000); // 1분마다 체크
 }
@@ -2163,7 +2410,7 @@ if (typeof window === 'undefined') {
 }
 ```
 
-#### 8.3 API 엔드포인트에 통합
+#### 8.3 API 엔드포인트에 통합 (실제 사용량 반환)
 
 ```typescript
 // pages/api/monitor.ts
@@ -2180,19 +2427,40 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  // 실제 수집된 메트릭 기반 통계
   const summary = metricsCollector.getSummary();
   const queueStatus = geminiRequestQueue.getQueueStatus();
 
-  // 알림 체크 및 발송
-  await alertService.checkAndAlert({
-    ...summary,
-    queueLength: queueStatus.queueLength,
-  });
+  // 실제 사용량 기반 알림 체크
+  await alertService.checkAndAlert();
+
+  // 실제 API 응답 값 기반 상세 통계
+  const recentMetrics = metricsCollector.getMetrics('hour');
+  const detailedStats = {
+    // 실제 토큰 사용량 (API 응답의 totalTokenCount 합계)
+    totalInputTokens: recentMetrics.reduce((sum, m) => sum + m.inputTokens, 0),
+    totalOutputTokens: recentMetrics.reduce((sum, m) => sum + m.outputTokens, 0),
+    totalTokens: recentMetrics.reduce((sum, m) => sum + m.totalTokens, 0),
+    totalCachedTokens: recentMetrics.reduce((sum, m) => sum + (m.cachedTokens || 0), 0),
+    
+    // 실제 비용 (실제 사용량 기반 계산)
+    totalCost: recentMetrics.reduce((sum, m) => sum + m.cost, 0),
+    
+    // 실제 요청 통계
+    totalRequests: recentMetrics.length,
+    successfulRequests: recentMetrics.filter(m => m.status === 'success').length,
+    failedRequests: recentMetrics.filter(m => m.status === 'error').length,
+  };
 
   res.status(200).json({
-    summary,
+    summary: {
+      ...summary,
+      // 실제 사용량 상세 정보 추가
+      ...detailedStats,
+    },
     queueStatus,
     timestamp: new Date().toISOString(),
+    note: '모든 값은 Gemini API 응답의 usageMetadata에서 추출한 실제 값입니다.',
   });
 }
 ```
