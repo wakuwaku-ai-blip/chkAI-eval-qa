@@ -2752,28 +2752,60 @@ const ChecklistPage = () => {
           }}>
             내부 관리계획 체크리스트
           </h1>
-        <button 
-          onClick={() => setAddModalOpen(true)}
-          style={{
-            padding: '8px 16px',
-              backgroundColor: '#0078d4',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: '500',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'background-color 0.2s'
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#106ebe'}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#0078d4'}
-          >
-            <span style={{ fontSize: '16px' }}>+</span>
-          항목 추가
-        </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={() => router.push('/dashboard')}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#1890ff',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+              }}
+            >
+              📊 사용량 모니터링
+            </button>
+            <button
+              onClick={() => router.push('/load-test')}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#52c41a',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+              }}
+            >
+              ⚡ 부하 테스트
+            </button>
+            <button 
+              onClick={() => setAddModalOpen(true)}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#0078d4',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                transition: 'background-color 0.2s'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#106ebe'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#0078d4'}
+            >
+              <span style={{ fontSize: '16px' }}>+</span>
+              항목 추가
+            </button>
+          </div>
       </div>
       </div>
 
