@@ -214,7 +214,7 @@ components/
 **필요한 정보:**
 1. **Incoming Webhooks 사용 시:**
    - Slack 웹훅 URL: Slack에서 생성한 웹훅 URL
-   - 알림 채널: `#api-monitoring`
+   - 알림 채널: `#notification`
 
 2. **Slack App 사용 시:**
    - Bot Token: `xoxb-xxxxxxxxxxxx-...`

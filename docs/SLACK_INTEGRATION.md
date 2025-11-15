@@ -30,7 +30,7 @@
 
 4. **웹훅 URL 생성**
    - "Add New Webhook to Workspace" 클릭
-   - 알림을 받을 채널 선택 (예: `#api-monitoring`)
+   - 알림을 받을 채널 선택 (예: `#notification`)
    - "Allow" 클릭
    - 생성된 Webhook URL 복사
 
@@ -65,7 +65,7 @@
 | 항목 | 설명 | 예시 |
 |------|------|------|
 | **Webhook URL** | 슬랙에서 제공하는 웹훅 URL | `https://hooks.slack.com/services/...` |
-| **채널** | 알림을 받을 채널 이름 | `#api-monitoring` |
+| **채널** | 알림을 받을 채널 이름 | `#notification` |
 | **사용자명** | 봇 이름 (선택적) | `chkAI Monitor` |
 | **아이콘** | 이모지 또는 이미지 URL (선택적) | `:warning:` |
 
@@ -458,7 +458,7 @@ curl -X POST https://hooks.slack.com/services/YOUR/WEBHOOK/URL \
   -H 'Content-Type: application/json' \
   -d '{
     "text": "테스트 메시지",
-    "channel": "#api-monitoring"
+    "channel": "#notification"
   }'
 ```
 
@@ -481,7 +481,7 @@ curl -X POST https://slack.com/api/chat.postMessage \
 - [ ] 슬랙 워크스페이스 접속
 - [ ] Incoming Webhooks 또는 Slack App 생성
 - [ ] 웹훅 URL 또는 Bot Token 획득
-- [ ] 알림을 받을 채널 생성 (#api-monitoring)
+- [ ] 알림을 받을 채널 생성 (#notification)
 - [ ] 환경 변수 설정
 - [ ] 슬랙 알림 테스트
 - [ ] 알림 메시지 포맷 확인

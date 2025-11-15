@@ -10,7 +10,7 @@ export default async function handler(
     res.status(200).json({
       enabled: process.env.ALERTS_ENABLED === 'true',
       slackWebhookUrl: process.env.SLACK_WEBHOOK_URL ? '설정됨' : '미설정',
-      slackChannel: process.env.SLACK_CHANNEL || '#api-monitoring',
+      slackChannel: process.env.SLACK_CHANNEL || '#notification',
       cooldownMinutes: parseInt(process.env.ALERT_COOLDOWN_MINUTES || '5', 10),
       thresholds: {
         rpm: {
