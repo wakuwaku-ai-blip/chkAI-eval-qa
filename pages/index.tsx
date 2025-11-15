@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import { useTable, useResizeColumns, useFlexLayout, Column } from 'react-table';
 import { Button as AntButton } from 'antd';
 import type { ButtonProps } from 'antd';
+import { useRouter } from 'next/router';
 
 interface ChecklistItem {
   _id?: string;
@@ -2728,6 +2729,9 @@ const ChecklistPage = () => {
         backgroundColor: 'white',
         borderBottom: '1px solid #edebe9',
         padding: '16px 24px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         position: 'sticky',
         top: 0,
         zIndex: 100,
