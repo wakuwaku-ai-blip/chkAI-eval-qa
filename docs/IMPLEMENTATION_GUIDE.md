@@ -899,6 +899,30 @@ export async function callGeminiAPI(
 - `cachedContentTokenCount`는 선택적 필드 (캐시 사용 시에만 존재)
 - 모든 토큰 값은 실제 API 응답에서 받은 값을 사용 (추정치 사용 금지)
 
+**실제 API 응답에서 값 추출 예시:**
+```typescript
+// Gemini API 응답 구조
+const response = await fetch(/* ... */);
+const data = await response.json();
+
+// usageMetadata 추출 (반드시 실제 응답에서)
+const usageMetadata = data.usageMetadata;
+
+if (!usageMetadata) {
+  console.warn('usageMetadata가 없습니다. 로깅하거나 기본값 처리 필요');
+  // 기본값 설정 또는 에러 처리
+}
+
+// 실제 값 사용
+const inputTokens = usageMetadata.promptTokenCount;      // 실제 입력 토큰
+const outputTokens = usageMetadata.candidatesTokenCount;  // 실제 출력 토큰
+const totalTokens = usageMetadata.totalTokenCount;        // 실제 총 토큰
+const cachedTokens = usageMetadata.cachedContentTokenCount || 0; // 캐시 토큰 (선택적)
+
+// 비용 계산 (실제 값 기반)
+const cost = (inputTokens / 1000000) * 0.30 + (outputTokens / 1000000) * 2.50;
+```
+
 #### 4.3 모니터링 API 엔드포인트
 
 ```typescript
