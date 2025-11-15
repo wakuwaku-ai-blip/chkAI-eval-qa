@@ -932,142 +932,364 @@ export default function MetricsDashboard() {
 ## 5. 폴백 메커니즘 구현
 
 ### 목적
-- API 실패 시 기본 규칙 기반 평가로 폴백
-- 서비스 가용성 유지
-- 사용자 경험 보장
+- API 실패 시 품질을 유지하면서 사용자 경험 보장
+- 명확한 에러 처리 및 재시도 안내
+- 비동기 처리로 서비스 가용성 유지
+
+### ⚠️ 중요 고려사항
+
+**규칙 기반 평가 폴백의 한계:**
+- AI 평가의 정교함과 품질을 규칙 기반으로 대체하기 어려움
+- 부정확한 평가 결과로 인한 신뢰도 저하
+- 사용자에게 혼란을 줄 수 있음
+
+**권장 접근 방식:**
+1. **명확한 에러 메시지**: AI 평가 실패 시 사용자에게 투명하게 안내
+2. **자동 재시도 큐**: 실패한 요청을 큐에 넣어 나중에 재시도
+3. **부분 폴백**: 증빙 검증만 규칙 기반으로 하고, 최종 평가는 실패 처리
+4. **대기 및 재시도**: 사용자에게 대기 시간을 안내하고 자동 재시도
 
 ### 구현 방법
 
-#### 5.1 규칙 기반 평가 함수
+#### 5.1 재시도 큐 시스템
 
 ```typescript
-// lib/fallback-evaluator.ts
-interface FallbackEvaluationResult {
-  progress: number;
-  improvement: string;
-  basis: string;
-  evidenceAnalysis: {
-    needsEvidence: boolean;
-    evidenceEvaluation: any;
-    evidenceValidation: {
-      isAppropriate: boolean;
-      issues: string[];
-      recommendations: string[];
-      severity: 'low' | 'medium' | 'high' | 'critical';
-      canProceed: boolean;
+// lib/retry-queue.ts
+interface QueuedEvaluation {
+  id: string;
+  data: {
+    evaluationMethod: string;
+    requiredEvidence: string;
+    resultText: string;
+    resultFiles: string[];
+    implementationStatus?: string;
+  };
+  attempts: number;
+  maxAttempts: number;
+  createdAt: Date;
+  nextRetryAt: Date;
+  priority: 'high' | 'medium' | 'low';
+}
+
+class RetryQueue {
+  private queue: QueuedEvaluation[] = [];
+  private processing: Set<string> = new Set();
+
+  async enqueue(
+    data: QueuedEvaluation['data'],
+    priority: 'high' | 'medium' | 'low' = 'medium'
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const queued: QueuedEvaluation = {
+      id,
+      data,
+      attempts: 0,
+      maxAttempts: 3,
+      createdAt: new Date(),
+      nextRetryAt: new Date(Date.now() + 60000), // 1분 후 재시도
+      priority,
     };
-  };
+
+    this.queue.push(queued);
+    this.queue.sort((a, b) => {
+      const priorityOrder = { high: 3, medium: 2, low: 1 };
+      if (priorityOrder[b.priority] !== priorityOrder[a.priority]) {
+        return priorityOrder[b.priority] - priorityOrder[a.priority];
+      }
+      return a.nextRetryAt.getTime() - b.nextRetryAt.getTime();
+    });
+
+    return id;
+  }
+
+  async processQueue() {
+    const now = new Date();
+    const ready = this.queue.filter(
+      (item) => item.nextRetryAt <= now && !this.processing.has(item.id)
+    );
+
+    for (const item of ready) {
+      this.processing.add(item.id);
+      
+      try {
+        // 평가 재시도
+        const result = await this.retryEvaluation(item);
+        this.remove(item.id);
+        return result;
+      } catch (error) {
+        item.attempts++;
+        if (item.attempts >= item.maxAttempts) {
+          // 최대 재시도 횟수 초과
+          this.remove(item.id);
+          throw new Error('최대 재시도 횟수를 초과했습니다.');
+        }
+        
+        // Exponential Backoff로 다음 재시도 시간 설정
+        const delay = Math.min(60000 * Math.pow(2, item.attempts), 600000); // 최대 10분
+        item.nextRetryAt = new Date(Date.now() + delay);
+        this.processing.delete(item.id);
+      }
+    }
+  }
+
+  private async retryEvaluation(item: QueuedEvaluation) {
+    // 실제 평가 API 호출
+    // ... 평가 로직 ...
+  }
+
+  private remove(id: string) {
+    this.queue = this.queue.filter((item) => item.id !== id);
+    this.processing.delete(id);
+  }
+
+  getStatus(id: string) {
+    const item = this.queue.find((i) => i.id === id);
+    if (!item) return null;
+
+    return {
+      id: item.id,
+      attempts: item.attempts,
+      maxAttempts: item.maxAttempts,
+      nextRetryAt: item.nextRetryAt,
+      estimatedWaitTime: Math.max(0, item.nextRetryAt.getTime() - Date.now()),
+    };
+  }
 }
 
-export function fallbackEvaluate(
-  evaluationMethod: string,
-  requiredEvidence: string,
-  resultText: string,
-  resultFiles: string[]
-): FallbackEvaluationResult {
-  // 기본 규칙 기반 평가 로직
-  const hasFiles = resultFiles && resultFiles.length > 0;
-  const hasText = resultText && resultText.trim().length > 30;
-  
-  // 증빙 적절성 기본 평가
-  let isAppropriate = true;
-  const issues: string[] = [];
-  const recommendations: string[] = [];
-  let severity: 'low' | 'medium' | 'high' | 'critical' = 'low';
+export const retryQueue = new RetryQueue();
 
-  if (!hasFiles && requiresEvidence(requiredEvidence)) {
-    isAppropriate = false;
-    issues.push('필수 증빙 자료가 제출되지 않았습니다.');
-    severity = 'high';
-    recommendations.push('체크리스트에서 요구하는 증빙 자료를 제출해주세요.');
-  }
-
-  if (hasText && resultText.length < 50) {
-    issues.push('이행현황 내용이 부족합니다.');
-    severity = severity === 'high' ? 'high' : 'medium';
-    recommendations.push('이행현황을 더 구체적으로 작성해주세요.');
-  }
-
-  // 기본 진행률 계산
-  let progress = 50; // 기본값
-  if (hasFiles && hasText) {
-    progress = 70;
-  }
-  if (isAppropriate && hasFiles && hasText && resultText.length > 100) {
-    progress = 85;
-  }
-
-  return {
-    progress,
-    improvement: 'AI 평가 시스템이 일시적으로 사용 불가능합니다. 기본 규칙 기반 평가를 수행했습니다.',
-    basis: '규칙 기반 평가 (폴백 모드)',
-    evidenceAnalysis: {
-      needsEvidence: requiresEvidence(requiredEvidence),
-      evidenceEvaluation: {
-        hasEvidence: hasFiles,
-        evidenceQuality: hasFiles ? 'medium' : 'none',
-      },
-      evidenceValidation: {
-        isAppropriate,
-        issues,
-        recommendations,
-        severity,
-        canProceed: severity !== 'critical' && severity !== 'high',
-      },
-    },
-  };
-}
+// 주기적으로 큐 처리
+setInterval(() => {
+  retryQueue.processQueue().catch(console.error);
+}, 30000); // 30초마다 체크
 ```
 
-#### 5.2 API 호출 래퍼에 폴백 추가
+#### 5.2 명확한 에러 응답 및 재시도 안내
 
 ```typescript
 // pages/api/evaluate.ts
-import { fallbackEvaluate } from '../../lib/fallback-evaluator';
+import { retryQueue } from '../../lib/retry-queue';
+import { classifyError, ErrorType } from '../../lib/error-handler';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    // ... 기존 코드 ...
+    const { evaluationMethod, requiredEvidence, resultText, resultFiles } = req.body;
 
-    let evaluationResult;
     try {
       // AI 평가 시도
-      evaluationResult = await callGeminiAPI(/* ... */);
+      const evaluationResult = await callGeminiAPI(/* ... */);
+      res.status(200).json(evaluationResult);
     } catch (error) {
-      console.error('AI 평가 실패, 폴백 모드로 전환:', error);
-      
-      // 폴백 평가 수행
-      evaluationResult = fallbackEvaluate(
-        evaluationMethod,
-        requiredEvidence,
-        resultText,
-        resultFiles || []
-      );
+      const errorInfo = classifyError(error);
 
-      // 폴백 사용 알림
-      console.warn('Fallback evaluation used:', {
-        timestamp: new Date().toISOString(),
-        error: error instanceof Error ? error.message : 'unknown',
+      // 재시도 가능한 에러인 경우 큐에 추가
+      if (errorInfo.retryable && errorInfo.type !== ErrorType.QUOTA_EXCEEDED) {
+        const queueId = await retryQueue.enqueue(
+          {
+            evaluationMethod,
+            requiredEvidence,
+            resultText,
+            resultFiles: resultFiles || [],
+          },
+          'high' // 평가는 높은 우선순위
+        );
+
+        const queueStatus = retryQueue.getStatus(queueId);
+
+        // 사용자에게 명확한 안내
+        return res.status(202).json({
+          error: 'AI 평가 시스템에 일시적인 문제가 발생했습니다.',
+          message: '요청이 대기열에 추가되었습니다. 잠시 후 자동으로 재시도됩니다.',
+          queueId,
+          estimatedWaitTime: queueStatus?.estimatedWaitTime || 60000,
+          retryAfter: errorInfo.retryAfter || 60,
+          canRetry: true,
+          // 부분 결과 제공 (증빙 검증만)
+          partialResult: {
+            evidenceAnalysis: {
+              needsEvidence: requiresEvidence(requiredEvidence),
+              evidenceEvaluation: {
+                hasEvidence: (resultFiles || []).length > 0,
+                evidenceQuality: (resultFiles || []).length > 0 ? 'medium' : 'none',
+              },
+            },
+          },
+        });
+      }
+
+      // 재시도 불가능한 에러
+      res.status(500).json({
+        error: errorInfo.userMessage,
+        type: errorInfo.type,
+        canRetry: false,
+        recommendation: errorInfo.type === ErrorType.QUOTA_EXCEEDED
+          ? '일일 사용량 한도를 초과했습니다. 내일 다시 시도해주세요.'
+          : '잠시 후 다시 시도해주시거나 관리자에게 문의해주세요.',
       });
     }
-
-    res.status(200).json(evaluationResult);
   } catch (error) {
-    // 최종 폴백
-    const fallbackResult = fallbackEvaluate(
-      req.body.evaluationMethod,
-      req.body.requiredEvidence,
-      req.body.resultText,
-      req.body.resultFiles || []
-    );
-    
-    res.status(200).json({
-      ...fallbackResult,
-      improvement: '시스템 오류로 인해 기본 평가를 수행했습니다. 관리자에게 문의해주세요.',
+    res.status(500).json({
+      error: '평가 처리 중 예상치 못한 오류가 발생했습니다.',
+      canRetry: false,
     });
   }
 }
 ```
+
+#### 5.3 큐 상태 확인 API
+
+```typescript
+// pages/api/evaluate/status.ts
+import { NextApiRequest, NextApiResponse } from 'next';
+import { retryQueue } from '../../../lib/retry-queue';
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const { queueId } = req.query;
+
+  if (!queueId || typeof queueId !== 'string') {
+    return res.status(400).json({ error: 'queueId가 필요합니다.' });
+  }
+
+  const status = retryQueue.getStatus(queueId);
+
+  if (!status) {
+    return res.status(404).json({
+      error: '대기열에서 찾을 수 없습니다.',
+      message: '이미 처리되었거나 만료되었을 수 있습니다.',
+    });
+  }
+
+  res.status(200).json({
+    status: status.attempts < status.maxAttempts ? 'pending' : 'failed',
+    attempts: status.attempts,
+    maxAttempts: status.maxAttempts,
+    nextRetryAt: status.nextRetryAt,
+    estimatedWaitTime: status.estimatedWaitTime,
+  });
+}
+```
+
+#### 5.4 프론트엔드 재시도 처리
+
+```typescript
+// 프론트엔드에서 사용 예시
+async function handleEvaluate(data: EvaluationData) {
+  try {
+    const response = await fetch('/api/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    const result = await response.json();
+
+    if (response.status === 202) {
+      // 대기열에 추가됨 - 폴링으로 상태 확인
+      const queueId = result.queueId;
+      
+      showMessage({
+        type: 'info',
+        message: 'AI 평가 시스템이 일시적으로 사용량이 많습니다. 잠시 후 자동으로 재시도됩니다.',
+        duration: 0, // 자동 닫기 안 함
+      });
+
+      // 폴링으로 상태 확인
+      const pollInterval = setInterval(async () => {
+        const statusResponse = await fetch(`/api/evaluate/status?queueId=${queueId}`);
+        const status = await statusResponse.json();
+
+        if (status.status === 'completed') {
+          clearInterval(pollInterval);
+          // 결과 표시
+          showEvaluationResult(status.result);
+        } else if (status.status === 'failed') {
+          clearInterval(pollInterval);
+          showMessage({
+            type: 'error',
+            message: '자동 재시도가 실패했습니다. 수동으로 다시 시도해주세요.',
+          });
+        }
+      }, 5000); // 5초마다 확인
+
+      // 부분 결과 표시
+      if (result.partialResult) {
+        showPartialResult(result.partialResult);
+      }
+    } else if (response.ok) {
+      // 정상 결과
+      showEvaluationResult(result);
+    } else {
+      // 에러
+      showMessage({
+        type: 'error',
+        message: result.error || '평가 중 오류가 발생했습니다.',
+      });
+    }
+  } catch (error) {
+    showMessage({
+      type: 'error',
+      message: '네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+    });
+  }
+}
+```
+
+#### 5.5 부분 폴백 (증빙 검증만)
+
+```typescript
+// 증빙 검증 실패 시에만 부분 폴백
+async function validateEvidenceWithFallback(
+  requiredEvidence: string,
+  resultFiles: string[],
+  resultText: string
+) {
+  try {
+    // AI 증빙 검증 시도
+    return await validateEvidenceContentWithAI(/* ... */);
+  } catch (error) {
+    console.warn('AI 증빙 검증 실패, 기본 검증으로 폴백:', error);
+
+    // 기본 증빙 검증만 수행 (최종 평가는 실패 처리)
+    const hasFiles = resultFiles && resultFiles.length > 0;
+    const hasText = resultText && resultText.trim().length > 30;
+
+    return {
+      isAppropriate: hasFiles && hasText,
+      issues: !hasFiles ? ['증빙 자료가 제출되지 않았습니다.'] : [],
+      reasons: !hasFiles ? ['필수 증빙 자료가 누락되었습니다.'] : [],
+      severity: !hasFiles ? 'high' : 'low',
+      recommendations: !hasFiles
+        ? ['체크리스트에서 요구하는 증빙 자료를 제출해주세요.']
+        : [],
+      canProceed: hasFiles && hasText,
+      isFallback: true, // 폴백 사용 표시
+    };
+  }
+}
+```
+
+### 권장 전략 요약
+
+| 상황 | 처리 방법 | 이유 |
+|------|-----------|------|
+| **일시적 네트워크 오류** | 재시도 큐에 추가 | 자동 복구 가능 |
+| **Rate Limit 초과** | 재시도 큐에 추가 (지연 후) | 시간이 지나면 해결 |
+| **Quota 초과** | 명확한 에러 메시지 | 재시도 불가능 |
+| **API 서버 오류 (5xx)** | 재시도 큐에 추가 | 일시적 문제 |
+| **영구적 오류** | 명확한 에러 메시지 | 재시도 불가능 |
+
+**핵심 원칙:**
+- ✅ **품질 우선**: 규칙 기반 평가로 대체하지 않고, 재시도 또는 명확한 에러 안내
+- ✅ **투명성**: 사용자에게 상황을 명확히 알림
+- ✅ **자동화**: 가능한 경우 자동 재시도
+- ✅ **부분 결과**: 가능한 경우 부분 결과 제공 (증빙 검증 등)
 
 ---
 
@@ -1703,8 +1925,11 @@ export default async function handler(
   - [ ] 실시간 업데이트
 
 - [ ] 폴백 메커니즘 구현
-  - [ ] 규칙 기반 평가 함수
-  - [ ] API 호출 래퍼에 폴백 추가
+  - [ ] 재시도 큐 시스템 구현
+  - [ ] 명확한 에러 응답 및 재시도 안내
+  - [ ] 큐 상태 확인 API
+  - [ ] 프론트엔드 재시도 처리 (폴링)
+  - [ ] 부분 폴백 (증빙 검증만)
   - [ ] 폴백 사용 로깅
 
 - [ ] 에러 처리 및 재시도 로직 검증
