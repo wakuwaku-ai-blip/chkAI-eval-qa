@@ -223,7 +223,7 @@ components/
 **환경 변수:**
 ```env
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
-SLACK_CHANNEL=#api-monitoring
+SLACK_CHANNEL=#notification
 SLACK_USERNAME=chkAI Monitor
 SLACK_ICON_EMOJI=:warning:
 ```
@@ -499,7 +499,7 @@ METRICS_RETENTION_DAYS=30
 # 알림
 ALERTS_ENABLED=true
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
-SLACK_CHANNEL=#api-monitoring
+SLACK_CHANNEL=#notification
 ALERT_COOLDOWN_MINUTES=5
 
 # 평가 큐

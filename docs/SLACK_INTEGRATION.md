@@ -87,7 +87,7 @@
 # 슬랙 알림 설정
 # SLACK_WEBHOOK_URL은 Slack에서 생성한 웹훅 URL을 입력하세요
 SLACK_WEBHOOK_URL=your-slack-webhook-url-here
-SLACK_CHANNEL=#api-monitoring
+SLACK_CHANNEL=#notification
 SLACK_USERNAME=chkAI Monitor
 SLACK_ICON_EMOJI=:warning:
 ```
