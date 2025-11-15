@@ -635,6 +635,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 - 비용 모니터링
 - 이상 징후 조기 발견
 
+### ⚠️ 중요: 실제 API 응답 값 사용
+
+**모든 사용량 통계는 Gemini API 응답의 `usageMetadata`에서 추출한 실제 값을 사용합니다.**
+
+- ❌ **사용하지 않음**: 추정치, 계산된 값, 가정된 값
+- ✅ **사용함**: API 응답의 `usageMetadata`에서 받은 실제 값
+  - `promptTokenCount`: 실제 입력 토큰 수
+  - `candidatesTokenCount`: 실제 출력 토큰 수
+  - `totalTokenCount`: 실제 총 토큰 수
+  - `cachedContentTokenCount`: 캐시된 토큰 수 (선택적)
+
+**이유:**
+- 정확한 비용 계산을 위해 실제 사용량 필요
+- Rate Limit 모니터링을 위해 정확한 TPM 값 필요
+- 신뢰할 수 있는 모니터링 데이터 확보
+
 ### 구현 방법
 
 #### 4.1 사용량 메트릭 수집
@@ -2186,6 +2202,21 @@ k6 run scripts/load-test-k6.js
 - 사용량 임계값 초과 시 즉시 알림
 - 비용 모니터링
 - 장애 예방
+
+### ⚠️ 중요: 실제 API 사용량 기반 알림
+
+**모든 알림 임계값은 실제 Gemini API 응답에서 받은 `usageMetadata` 값을 기반으로 계산합니다.**
+
+- 실제 RPM: 최근 1분간 실제 요청 수
+- 실제 TPM: 최근 1분간 실제 `totalTokenCount` 합계
+- 실제 비용: 실제 사용량 기반 계산된 비용
+- 실제 에러율: 실제 성공/실패 비율
+
+**임계값 설정 예시 (무료 플랜 기준):**
+- RPM 경고: 10 (15의 67%)
+- RPM 위험: 14 (15의 93%)
+- TPM 경고: 800,000 (1,000,000의 80%)
+- TPM 위험: 950,000 (1,000,000의 95%)
 
 ### 구현 방법
 
