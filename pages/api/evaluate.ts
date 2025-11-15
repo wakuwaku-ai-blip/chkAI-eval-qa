@@ -643,6 +643,10 @@ ${textAnalyses ? `\n파일 내용:\n${textAnalyses}` : ''}
   "recommendations": ["개선 권고사항1", "개선 권고사항2"]
 }
 
+중요: severity가 최종 판단 기준입니다.
+- severity가 "low" 또는 "medium"이면 증빙이 부분적으로라도 적절하다고 판단하여 isAppropriate를 true로 설정하세요.
+- severity가 "high" 또는 "critical"이면 증빙이 부적절하다고 판단하여 isAppropriate를 false로 설정하세요.
+
 중요: JSON 형식으로만 응답하고 다른 설명은 포함하지 마세요.`;
 
   const MAX_RETRIES = 3;
@@ -904,8 +908,11 @@ ${textAnalyses ? `\n파일 내용:\n${textAnalyses}` : ''}
   }
 
   // 진행 가능 여부 결정
-  const canProceed = validationResult.isAppropriate || 
-    (validationResult.severity === 'low' || validationResult.severity === 'medium');
+  // severity 기준으로 판단 (프롬프트의 판단 기준에 따름)
+  // - low/medium: 경고 후 평가 진행 가능
+  // - high/critical: 평가 진행 불가
+  // isAppropriate는 참고용이며, 최종 판단은 severity로 결정
+  const canProceed = validationResult.severity === 'low' || validationResult.severity === 'medium';
 
   return {
     ...validationResult,
